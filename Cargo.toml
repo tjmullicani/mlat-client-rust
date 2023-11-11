@@ -1,0 +1,16 @@
+[package]
+name = "mlat-client"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+crc = "3.0.1"
+env_logger = "0.10.1"
+hex = "0.4.3"
+hex-slice = "0.1.4"
+io = "0.0.2"
+log = "0.4.20"
+rustc-serialize = "0.3.24"
+stdio = "0.1.0"
