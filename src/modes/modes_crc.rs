@@ -75,7 +75,7 @@ static PARITY_TABLE: [u32; 112] = [
     0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000
 ];
 
-// The `checksum` function calculates the checksum for the given data.
+// Calculates the checksum of the data frame passed to it, based on the parity table provided.
 // It takes a byte slice `data` and an optional number of bits.
 // If the number of bits is not provided, it is determined based on the length of `data`.
 pub fn checksum(data: &[u8], bits: Option<u8>) -> u32 {
@@ -113,6 +113,10 @@ pub fn checksum(data: &[u8], bits: Option<u8>) -> u32 {
     crc
 }
 
+// Calculates the checksum of the data frame passed to it, based on the parity table provided.
+// It takes a byte slice `data` and an optional number of bits.
+// If the number of bits is not provided, it is determined based on the length of `data`.
+// Returns true if checksum in the message (last 3 bytes) matches the computed checksum, otherwise returns false.
 pub fn checksum_compare(data: &[u8], bits: Option<u8>) -> bool {
     let bits = match bits {
         Some(b) => b as usize,
@@ -154,7 +158,7 @@ pub fn checksum_compare(data: &[u8], bits: Option<u8>) -> bool {
     received_checksum == expected_checksum 
 }
 
-// The `crc` function calculates the CRC value for the given data.
+// Extracts the CRC value from a data frame last 3 bytes.
 // It takes a byte slice `data` and an optional number of bits.
 // If the number of bits is not provided, it defaults to the length of `data` multiplied by 8 (to convert to bits).
 pub fn crc(data: &[u8], bits: Option<u8>) -> u32 {
