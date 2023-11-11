@@ -1055,6 +1055,7 @@ fn main() {
     assert_eq!(received_checksum, modescrc_buffer_crc(&msg[0..11]));
     */
 
+    /*
     // crc is as expected for any kind of data packet
     let mut msg: Vec<u8>;
     msg = vec![0x5E, 0x35, 0x83, 0x7E, 0x22, 0x18, 0xB2];
@@ -1069,4 +1070,32 @@ fn main() {
     assert_eq!(checksum_compare(&msg, Some(LONG_MSG_BITS)), true);
     // automatically determine bits size
     assert_eq!(checksum_compare(&msg, None), true);
+    */
+
+    // Tests pulled from https://github.com/flightrac/modes-crc/blob/master/test/crc_checker.js
+    // test valid checksum for short message
+    let mut data: Vec<u8>;
+    data = vec![0x5D, 0x4D, 0x20, 0x23, 0x7A, 0x55, 0xA6]; // 40, 0, 16, 36, 220, 121, 76
+    assert_eq!(checksum(&data, Some(SHORT_MSG_BITS)), 0x7A55A6);
+
+    // test invalid checksum for short message
+    let mut data: Vec<u8>;
+    data = vec![0x28, 0x00, 0x10, 0x24, 0xDC, 0x79, 0x4C]; // 40, 0, 16, 36, 220, 121, 76
+    assert_eq!(checksum_compare(&data, Some(SHORT_MSG_BITS)), false);
+
+    // test valid checksum for long message
+    data = vec![0x8F, 0x4D, 0x20, 0x23, 0x58, 0x7F, 0x34, 0x5E, 0x35, 0x83, 0x7E, 0x22, 0x18, 0xB2]; // 143, 77, 32, 35, 88, 127, 52, 94, 53, 131, 126, 34, 24, 178
+    assert_eq!(checksum(&data, Some(LONG_MSG_BITS)), 0x2218B2);
+
+    // test crc is as expected for any kind of data packet
+    data = vec![0x28, 0x00, 0x10, 0x24, 0xDC, 0x79, 0x4C];
+    assert_eq!(crc(&data, Some(SHORT_MSG_BITS)), 0xDC794C);
+
+    // test passing an invalid frame returns an error
+    data  = vec![0x06];
+    assert_eq!(checksum(&data, None), 0);
+
+    // test get message bits length from data frame size
+    data = vec![0x5D, 0x4D, 0x20, 0x23, 0x7A, 0x55, 0xA6];
+    assert_eq!(checksum(&data, None), 0x7A55A6);
 }
