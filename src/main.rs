@@ -331,12 +331,15 @@ impl ModesReader {
 
             // Read the message payload (variable length)
             //let mut message = read_bytes(&mut reader, message_length);
+            let mut message = Vec::new();
             // Attempt to read bytes into the message buffer
-            let message = match read_bytes(&mut reader, message_length) {
-                Ok(bytes) => bytes,
+            match read_bytes(&mut reader, message_length) {
+                Ok(bytes) => {
+                    message = bytes;
+                },
                 Err(err) => {
                     warn!("Error reading message: {}", err);
-                    Vec::new() // Provide a default value or an empty buffer
+                    continue;
                 }
             };
             
@@ -828,7 +831,7 @@ fn handle_connection(stream: &mut TcpStream) -> io::Result<()> {
             Ok(o) => {},
             Err(e) => error!("handle_connection: {}", e),
         }
-        warn!("Extracted {} messages", mode.received_messages);
+        warn!("Extracted {} valid messages against CRC", mode.received_messages);
     }
     
 
