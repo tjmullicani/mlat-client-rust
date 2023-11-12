@@ -18,6 +18,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  * References:
  *   https://github.com/firestuff/adsb-tools/blob/master/protocols/beast.md
+ *   https://github.com/wiseman/java-mode-s-beast/blob/master/src/main/java/com/lemondronor/modesbeast/BeastMessageParser.java
  *   https://github.com/junzis/sil/blob/master/stream/base.py
  *   https://thepythoncode.com/assistant/code-converter/c/rust/
  */
@@ -54,6 +55,7 @@ enum DecoderMode {
     None,              /* Not configured */
 }
 
+const BEAST_ESCAPE: u8               = 0x1A;
 // message types
 const MESSAGE_TYPE_AC: u8            = 0x31; // '1'
 const MESSAGE_TYPE_MODE_S: u8        = 0x32; // '2'
@@ -260,14 +262,16 @@ impl ModesReader {
         for message in self.buffer.iter() {
             debug!("feed_beast: ");
             debug!("feed_beast: --- NEW START OF FRAME ---");
+            debug!("feed_beast: frame = {:#02X}", message.as_hex());
             let mut reader = &message[..];
 
-            // Read the start-of-message byte (0x1A)
+            // Read the start-of-message byte (BEAST_ESCAPE)
             let mut buffer = [0; 1];
             reader.read_exact(&mut buffer)?;
-            if buffer[0] != 0x1a {
-                error!("Lost sync with input stream: expected 0x1A but found {:#02X} instead", buffer[0]);
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "Lost sync with input stream: expected a 0x1A marker")); //unsure about offset value
+            //reader.read_exact(&mut buffer).expect("read buffer failed");
+            if buffer[0] != BEAST_ESCAPE {
+                error!("Lost sync with input stream: expected {} but found {:#02X} instead", BEAST_ESCAPE, buffer[0]);
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "Lost sync with input stream: expected a BEAST_ESCAPE marker")); //unsure about offset value
             }
 
             // Read the second byte to determine the message type
@@ -288,8 +292,8 @@ impl ModesReader {
                 MESSAGE_TYPE_RADARCAPE     => 14, // radarcape status message
                 MESSAGE_TYPE_RADARCAPE_POS => 21, // radarcape position message, no timestamp/signal bytes
                 _                          => {
-                    error!("Lost sync with input stream: unexpected message type {:#02X} after 0x1A", message_type as u8);
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "Lost sync with input stream: unexpected message type after 0x1A")); // unsure about offset value
+                    error!("Lost sync with input stream: unexpected message type {:#02X} after {}", message_type as u8, BEAST_ESCAPE);
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "Lost sync with input stream: unexpected message type after BEAST_ESCAPE")); // unsure about offset value
                 },
             };
             debug!("feed_beast: message_type = {}", message_type as char);
@@ -326,11 +330,24 @@ impl ModesReader {
             }
 
             // Read the message payload (variable length)
-            let mut message = read_bytes(&mut reader, message_length)?;
+            //let mut message = read_bytes(&mut reader, message_length);
+            // Attempt to read bytes into the message buffer
+            let message = match read_bytes(&mut reader, message_length) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    warn!("Error reading message: {}", err);
+                    Vec::new() // Provide a default value or an empty buffer
+                }
+            };
+            
             debug!("feed_beast: message  = {:#02X}", message.as_hex());
             //trace!("feed_beast: checksum = {:#02X}", checksum(&message, None));
             debug!("feed_beast: message checksum valid = {}", checksum_compare(&message, None));
             //assert_eq!(checksum_compare(&message, None), true);
+
+            if checksum_compare(&message, None) {
+                self.received_messages += 1;
+            }
 
 /////////////////////////////////////////////////////////////////////
             // do some filtering
@@ -522,14 +539,14 @@ impl ModesReader {
         // goto out;
         //}
 
-    while message_count >= 0 {
+    //while message_count >= 0 {
         //PyTuple_SET_ITEM(message_tuple, message_count, messages[message_count]); /* steals ref */
         //message_tuple.set_item(message_count, messages[message_count]);
-        message_count -= 1;
-    }
+    //    message_count -= 1;
+    //}
 
     //rv = Py_BuildValue("(l,N,N)", (long) (p - buffer_start), message_tuple, PyBool_FromLong(error_pending));
-    let rv = ((p as usize - buffer_start as usize) as i64, message_tuple, error_pending);
+    //let rv = ((p as usize - buffer_start as usize) as i64, message_tuple, error_pending);
 
     //return rv;
 /////////////////////////////////////////////////////////////////////
@@ -710,7 +727,7 @@ impl Message {
     }
 }
 
-/// Reads a byte from the reader, handling the escape sequence for 0x1a.
+/// Reads a byte from the reader, handling the escape sequence for BEAST_ESCAPE.
 ///
 /// # Arguments
 ///
@@ -723,22 +740,22 @@ fn read_byte<R: Read>(reader: &mut R) -> io::Result<u8> {
     let mut buffer = [0; 1];
     reader.read_exact(&mut buffer)?;
 
-    if buffer[0] == 0x1a {
+    if buffer[0] == BEAST_ESCAPE {
         // Check if it's an escape sequence
         let mut temp_buffer = [0; 1];
-        if reader.read_exact(&mut temp_buffer).is_ok() && temp_buffer[0] == 0x1a {
-            trace!("read_byte: is escape sequence. returning byte 0x1A");
-            Ok(0x1a) // It's an escape sequence, return the true 0x1a value
+        if reader.read_exact(&mut temp_buffer).is_ok() && temp_buffer[0] == BEAST_ESCAPE {
+            trace!("read_byte: is escape sequence. returning byte {}", BEAST_ESCAPE);
+            Ok(BEAST_ESCAPE) // It's an escape sequence, return the true BEAST_ESCAPE value
         } else {
             trace!("read_byte: is NOT escape sequence. returning byte {:#02X}", buffer[0]);
-            Ok(buffer[0]) // Not an escape sequence, return the original 0x1a
+            Ok(buffer[0]) // Not an escape sequence, return the original BEAST_ESCAPE 
         }
     } else {
         Ok(buffer[0]) // Return the read byte
     }
 }
 
-/// Reads a specified number of bytes from the reader, handling the optional escape sequence for 0x1a.
+/// Reads a specified number of bytes from the reader, handling the optional escape sequence for BEAST_ESCAPE.
 ///
 /// # Arguments
 ///
@@ -756,18 +773,18 @@ fn read_bytes<R: Read>(reader: &mut R, length: usize) -> io::Result<Vec<u8>> {
         let mut buffer = [0; 1];
         reader.read_exact(&mut buffer)?;
 
-        if buffer[0] == 0x1a {
+        if buffer[0] == BEAST_ESCAPE {
             let mut temp_buffer = [0; 1];
-            if reader.read_exact(&mut temp_buffer).is_ok() && temp_buffer[0] == 0x1a {
-                trace!("read_bytes: is escape sequence. returning byte 0x1A");
-                result.push(0x1a); // It's an escape sequence, add the true 0x1a value to the result
+            if reader.read_exact(&mut temp_buffer).is_ok() && temp_buffer[0] == BEAST_ESCAPE {
+                trace!("read_bytes: is escape sequence. returning byte {}", BEAST_ESCAPE);
+                result.push(BEAST_ESCAPE); // It's an escape sequence, add the true 0x1a value to the result
             } else {
                 trace!("read_bytes: is NOT escape sequence. return bytes {:#02X} {:#02X}", buffer[0], temp_buffer[0]);
                 result.push(buffer[0]); // Not an escape sequence, add the byte to the result
                 result.push(temp_buffer[0]);
             }
         } else {
-            result.push(buffer[0]); // Not 0x1a, add the byte to the result
+            result.push(buffer[0]); // Not BEAST_ESCAPE, add the byte to the result
         }
     }
 
@@ -781,7 +798,8 @@ fn read_bytes<R: Read>(reader: &mut R, length: usize) -> io::Result<Vec<u8>> {
 /// * `stream` - The TCP stream to read data from
 fn handle_connection(stream: &mut TcpStream) -> io::Result<()> {
     // Wrap the stream in a BufReader, so we can use the BufRead methods
-    let mut reader = BufReader::with_capacity(10000, stream);
+    //let mut reader = BufReader::with_capacity(10000, stream);
+    let mut reader = BufReader::new(stream);
 
     loop {
         // Read current data in the TcpStream
@@ -806,19 +824,11 @@ fn handle_connection(stream: &mut TcpStream) -> io::Result<()> {
         let mut mode = ModesReader::default();
         mode.set_decoder_mode(DecoderMode::Beast);
         mode.buffer = beast_messages.clone();
-        mode.feed_beast();
-
-        //for message in &beast_messages {
-            //debug!("Validating checksum: {:#02X}", message.as_hex());
-            //let received_checksum = u32::from(message[message.len()-3]) << 16
-            //                      | u32::from(message[message.len()-2]) << 8
-            //                      | u32::from(message[message.len()-1]);
-            //println!("Message: {:#02X}; CRC: {:#02X}", message.as_hex(), received_checksum);
-            //println!("Computed checksum: {:#02X}", crc(&message[0..message.len()-3], None));
-
-            //checksum_compare(&message, None);
-            //assert_eq!(checksum_compare(&message, None), true);
-        //}
+        match mode.feed_beast() {
+            Ok(o) => {},
+            Err(e) => error!("handle_connection: {}", e),
+        }
+        warn!("Extracted {} messages", mode.received_messages);
     }
     
 
@@ -832,21 +842,16 @@ fn find_frame_starts(data: &[u8]) -> Vec<(usize, usize)> {
 
     while i < data.len() {
         trace!("find_frame_start: data[i] = {:#02X}", data[i]);
-        if i + 2 < data.len() && data[i] != 0x1A && data[i + 1] == 0x1A && (data[i + 2] == 0x31 || data[i + 2] == 0x32 || data[i + 2] == 0x33) {
+        if i + 2 < data.len() && data[i] != BEAST_ESCAPE && data[i + 1] == BEAST_ESCAPE && (data[i + 2] == 0x31 || data[i + 2] == 0x32 || data[i + 2] == 0x33) {
             trace!("find_frame_starts: i         = {}",      i);
             trace!("find_frame_starts: data[i]   = {:#02X}", data[i]); 
             trace!("find_frame_starts: data[i+1] = {:#02X}", data[i+1]); 
             trace!("find_frame_starts: data[i+2] = {:#02X}", data[i+2]); 
-            let start_index = i + 1; // advance to start of frame marked by 0x1A
+            let start_index = i + 1; // advance to start of frame marked by BEAST_ESCAPE
             let mut end_index = i + 2;
-            while end_index + 2 < data.len() && !(data[end_index] == 0x1A && (data[end_index + 1] == 0x31 || data[end_index + 1] == 0x32 || data[end_index + 1] == 0x33)) {
+            while end_index + 2 < data.len() && !(data[end_index] == BEAST_ESCAPE && (data[end_index + 1] == 0x31 || data[end_index + 1] == 0x32 || data[end_index + 1] == 0x33)) {
                 end_index += 1;
             }
-            /*if end_index + 2 < data.len() {
-                trace!("find_frame_starts: start_index = {}", start_index);
-                trace!("find_frame_starts: end_index   = {}", end_index + 2);
-                frames.push((start_index, end_index + 2));
-                i = end_index + 2;*/
             if end_index < data.len() {
                 frames.push((start_index, end_index));
                 i = end_index;
