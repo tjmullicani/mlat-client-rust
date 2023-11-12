@@ -125,18 +125,19 @@ pub fn decode_ac12(ac12: u32) -> Option<i32> {
     decode_ac13(ac13)
 }
 
+// replaced by checksum() function in modes_crc.rs?
+/*
 pub fn crc_residual(message: &[u8], len: usize) -> u32 {
     let mut crc: u32;
     if len < 3 {
         return 0;
     }
-    //crc = modes_crc::modescrc_buffer_crc(&message[..len - 3]); //FIXME: hardcoded
-    crc = 0;
+    crc = modes_crc::modescrc_buffer_crc(&message[..len - 3]); //FIXME: hardcoded
     crc = crc ^ ((message[len - 3] as u32) << 16);
     crc = crc ^ ((message[len - 2] as u32) << 8);
     crc = crc ^ (message[len - 1] as u32);
     crc
-}
+}*/
 
 /// Returns the event name associated with a given DF event code.
 pub fn df_event_name(df: u32) -> Option<&'static str> {

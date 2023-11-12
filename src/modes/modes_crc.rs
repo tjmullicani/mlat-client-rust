@@ -34,7 +34,7 @@ extern crate crc;
 
 use crc::{Crc, Algorithm};
 use hex_slice::AsHex;
-use log::{debug, error};
+use log::{debug, error, trace};
 
 pub const MODES_GENERATOR_POLY: u32 = 0x1FFF409;
 pub const LONG_MSG_BITS: u8         = 112;
@@ -130,7 +130,7 @@ pub fn checksum_compare(data: &[u8], bits: Option<u8>) -> bool {
             }
         }
     };
-    debug!("checksum_compare: bits = {}", bits);
+    trace!("checksum_compare: bits = {}", bits);
 
     let offset = if bits == LONG_MSG_BITS as usize {
         0
@@ -138,7 +138,7 @@ pub fn checksum_compare(data: &[u8], bits: Option<u8>) -> bool {
         LONG_MSG_BITS - SHORT_MSG_BITS
     };
 
-    debug!("checksum_compare: offset = {}", offset);
+    trace!("checksum_compare: offset = {}", offset);
     let received_checksum = crc(data, Some(bits as u8));
 
     let mut expected_checksum = 0;
@@ -151,8 +151,8 @@ pub fn checksum_compare(data: &[u8], bits: Option<u8>) -> bool {
             expected_checksum ^= PARITY_TABLE[j + offset as usize];
         }
     }
-    debug!("checksum_compare: expected_checksum = {:#02X}", expected_checksum);
-    debug!("checksum_compare: received_checksum = {:#02X}", received_checksum);
+    trace!("checksum_compare: expected_checksum = {:#02X}", expected_checksum);
+    trace!("checksum_compare: received_checksum = {:#02X}", received_checksum);
 
     // Compare the received checksum with the expected checksum
     received_checksum == expected_checksum 
@@ -165,12 +165,12 @@ pub fn crc(data: &[u8], bits: Option<u8>) -> u32 {
     let bytes = bits.map_or(data.len() * 8, |b| b as usize) / 8;
 
     // Ensure that there are enough bytes in the data slice to prevent panic due to out-of-bounds access.
-    debug!("crc: bytes = {}", bytes);
+    trace!("crc: bytes = {}", bytes);
     if bytes < 3 {
         error!("Data slice is too short to calculate CRC");
         return 0;
     }
 
-    debug!("crc: data = {:#02X}", data.as_hex());
+    trace!("crc: data = {:#02X}", data.as_hex());
     ((data[bytes - 3] as u32) << 16) | ((data[bytes - 2] as u32) << 8) | (data[bytes - 1] as u32)
 }

@@ -27,16 +27,15 @@ use std::collections::HashMap;
 use std::time::{SystemTime, Duration};
 use std::net::{TcpStream, SocketAddr, TcpListener};
 use hex_slice::AsHex;
-use std::io::{self, Read};
-use std::io::BufReader;
 use std::error::Error;
 use std::fmt;
-use std::io::BufRead;
 use std::io::Cursor;
 use std::io::ErrorKind;
 use log::{error, warn, info, debug, trace};
 use rustc_serialize::hex::ToHex;
 use hex;
+use std::thread;
+use std::io::{self, BufRead, BufReader, Read, Write};
 
 mod modes;
 
@@ -259,6 +258,8 @@ impl ModesReader {
         let error_pending: bool = false;
 
         for message in self.buffer.iter() {
+            debug!("feed_beast: ");
+            debug!("feed_beast: --- NEW START OF FRAME ---");
             let mut reader = &message[..];
 
             // Read the start-of-message byte (0x1A)
@@ -324,10 +325,12 @@ impl ModesReader {
                 debug!("feed_beast: signal = {:#02X}", signal);
             }
 
-           // Read the message payload (variable length)
+            // Read the message payload (variable length)
             let mut message = read_bytes(&mut reader, message_length)?;
-            debug!("feed_beast: message = {:#02X}", message.as_hex());
-
+            debug!("feed_beast: message  = {:#02X}", message.as_hex());
+            //trace!("feed_beast: checksum = {:#02X}", checksum(&message, None));
+            debug!("feed_beast: message checksum valid = {}", checksum_compare(&message, None));
+            //assert_eq!(checksum_compare(&message, None), true);
 
 /////////////////////////////////////////////////////////////////////
             // do some filtering
@@ -586,10 +589,6 @@ impl ModesReader {
     }
 
     pub fn radarcape_position_to_dict(&mut self, data: &[u8]) -> HashMap<String, f32> {
-        let lat: f32;
-        let lon: f32;
-        let alt: f32;
-
         let lat = f32::from_le_bytes(data[4..8].try_into().unwrap());
         let lon = f32::from_le_bytes(data[8..12].try_into().unwrap());
         let alt = f32::from_le_bytes(data[12..16].try_into().unwrap());
@@ -608,7 +607,7 @@ impl ModesReader {
     * return -1 on internal error (exception has been raised)
     */
     pub fn filter_message(&mut self, message: &ModesMessage) -> i32 {
-       if message.df == DF_MODEAC {
+        if message.df == DF_MODEAC {
             if let Some(modeac_filter) = &self.modeac_filter {
                 return modeac_filter.contains(&message.address) as i32;
             }
@@ -620,10 +619,8 @@ impl ModesReader {
         }
 
         if let Some(seen) = &self.seen {
-            if message.df == 11 || message.df == 17 || message.df == 18 {
-                if seen.insert(message.address.clone()) {
-                    return -1;
-                }
+            if [11, 17, 18].contains(&message.df) && seen.insert(message.address.clone()) {
+                return -1;
             }
         }
 
@@ -636,23 +633,15 @@ impl ModesReader {
         }
 
         if self.default_filter.is_none() && self.specific_filter.is_none() {
-            // no filters installed, match everything
             return 1;
         }
 
-        // check per-type filters
-        if let Some(entry) = self.default_filter.get(message.df) {
-            if entry.is_true() {
-                return 1;
-            }
+        if let Some(entry) = self.default_filter.as_ref().and_then(|filter| filter.get(&message.df)) {
+            return entry.is_true() as i32;
         }
 
-        if let Some(entry) = self.specific_filter.get(message.df) {
-            if entry.is_none() {
-                return 0;
-            } else if entry.contains(&message.address) {
-                return 1;
-            }
+        if let Some(entry) = self.specific_filter.as_ref().and_then(|filter| filter.get(&message.df)) {
+            return entry.map_or(0, |entry| entry.contains(&message.address) as i32);
         }
 
         0
@@ -660,19 +649,19 @@ impl ModesReader {
 
     fn make_mode_change_event(&mut self) -> HashMap<&str, t> {
         let mut eventdata = HashMap::new();
-        eventdata.insert("mode", t::A(self.decoder_mode));
-        eventdata.insert("frequency", t::Int(self.frequency));
-        eventdata.insert("epoch", t::Str(self.epoch.as_str()));
+        eventdata.insert("mode", EventData::Mode(self.decoder_mode.clone()));
+        eventdata.insert("frequency", EventData::Frequency(self.frequency));
+        eventdata.insert("epoch", EventData::Epoch(self.epoch.clone()));
 
         eventdata
     }*/
 }
 
 #[derive(Debug)]
-enum t {
-    Str(&'static str),
-    A(DecoderMode),
-    Int(u64),
+enum EventData {
+    Mode(DecoderMode),
+    Frequency(u64),
+    Epoch(String),
 }
 
 /// Represents a parsed ADS-B message with minimal fields.
@@ -692,29 +681,19 @@ pub struct BeastMessage {
     pub message: Vec<u8>,
 }
 
-// Define a trait to mimic the decoderReader interface from Go.
-trait DecoderReader: BufRead {
-    fn unread_byte(&mut self) -> io::Result<()>;
-}
-
-// Implement the trait for BufReader<R> where R is a type that implements Read.
-impl<R: Read> DecoderReader for BufReader<R> {
-    fn unread_byte(&mut self) -> io::Result<()> {
-        self.consume(1);
-        Ok(())
-    }
-}
-
 // Decoder reads a Beast stream and stores individual frames.
-struct Decoder<R: DecoderReader> {
+struct Decoder {
     strip_escape: bool,
-    reader: R,
     buf: Vec<u8>,
     message: Message,
     timestamp: u64,
     signal_level: u8,
 }
 
+//  Consider replacing with tuple
+//  pub struct Message(usize, u8, Vec<u8>);
+//  The struct is replaced with a tuple struct, which directly contains the fields without the need for explicit field names.
+//  The fields are ordered as (message_length, message_type, message), matching the original struct's fields.
 struct Message {
     message_length: usize,
     message_type: u8,
@@ -743,25 +722,20 @@ impl Message {
 fn read_byte<R: Read>(reader: &mut R) -> io::Result<u8> {
     let mut buffer = [0; 1];
     reader.read_exact(&mut buffer)?;
+
     if buffer[0] == 0x1a {
         // Check if it's an escape sequence
-        trace!("read_byte: check escape sequence");
         let mut temp_buffer = [0; 1];
-        //reader.read_exact(&mut buffer)?;
-        if let Ok(escaped_byte) = reader.read_exact(&mut temp_buffer) {
-            trace!("read_byte: (temp_buffer[0]) {:#02X} = (buffer[0]) {:#02X}", temp_buffer[0], buffer[0]);
-            if temp_buffer[0] == 0x1a {
-                // It's an escape sequence, return the true 0x1a value
-                trace!("read_byte: is escape sequence. returning byte 0x1A");
-                return Ok(0x1a); // Return the true 0x1a value
-            } else {
-                trace!("read_byte: is NOT escape sequence. returning byte {:#02X}", buffer[0]);
-                // Not an escape sequence, put the byte back and return the original 0x1a
-                return Ok(buffer[0]);
-            }
+        if reader.read_exact(&mut temp_buffer).is_ok() && temp_buffer[0] == 0x1a {
+            trace!("read_byte: is escape sequence. returning byte 0x1A");
+            Ok(0x1a) // It's an escape sequence, return the true 0x1a value
+        } else {
+            trace!("read_byte: is NOT escape sequence. returning byte {:#02X}", buffer[0]);
+            Ok(buffer[0]) // Not an escape sequence, return the original 0x1a
         }
+    } else {
+        Ok(buffer[0]) // Return the read byte
     }
-    Ok(buffer[0])
 }
 
 /// Reads a specified number of bytes from the reader, handling the optional escape sequence for 0x1a.
@@ -777,54 +751,125 @@ fn read_byte<R: Read>(reader: &mut R) -> io::Result<u8> {
 /// or an `io::Error` if an error occurs during reading.
 fn read_bytes<R: Read>(reader: &mut R, length: usize) -> io::Result<Vec<u8>> {
     let mut result: Vec<u8> = Vec::with_capacity(length);
-    let mut count: usize = 0;
-    
-    while count < length {
+
+    for _ in 0..length {
         let mut buffer = [0; 1];
         reader.read_exact(&mut buffer)?;
+
         if buffer[0] == 0x1a {
-            // Check if it's an escape sequence
             let mut temp_buffer = [0; 1];
-            if let Ok(_) = reader.read_exact(&mut temp_buffer) {
-                trace!("read_bytes: (temp_buffer[0]) {:#02X} = (buffer[0]) {:#02X}", temp_buffer[0], buffer[0]);
-                if temp_buffer[0] == 0x1a {
-                    // It's an escape sequence, add the true 0x1a value to the result
-                    trace!("read_bytes: is escape sequence. returning byte 0x1A");
-                    result.push(0x1a);
-                } else {
-                    // Not an escape sequence, put the byte back and return the original 0x1a
-                    trace!("read_bytes: is NOT escape sequence. return bytes {:#02X} {:#02X}", buffer[0], temp_buffer[0]);
-                    result.push(buffer[0]);
-                    result.push(temp_buffer[0]);
-                }
+            if reader.read_exact(&mut temp_buffer).is_ok() && temp_buffer[0] == 0x1a {
+                trace!("read_bytes: is escape sequence. returning byte 0x1A");
+                result.push(0x1a); // It's an escape sequence, add the true 0x1a value to the result
             } else {
-                // Error reading the next byte
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "Error reading the next byte"));
+                trace!("read_bytes: is NOT escape sequence. return bytes {:#02X} {:#02X}", buffer[0], temp_buffer[0]);
+                result.push(buffer[0]); // Not an escape sequence, add the byte to the result
+                result.push(temp_buffer[0]);
             }
         } else {
-            // Not 0x1a, add the byte to the result
-            trace!("read_bytes: buffer[0] = {:#02X}", buffer[0]);
-            result.push(buffer[0]);
+            result.push(buffer[0]); // Not 0x1a, add the byte to the result
         }
-        count += 1;
     }
+
     Ok(result)
+}
+
+/// Handles a single TCP connection
+///
+/// # Arguments
+///
+/// * `stream` - The TCP stream to read data from
+fn handle_connection(stream: &mut TcpStream) -> io::Result<()> {
+    // Wrap the stream in a BufReader, so we can use the BufRead methods
+    let mut reader = BufReader::with_capacity(10000, stream);
+
+    loop {
+        // Read current data in the TcpStream
+        let received: Vec<u8> = reader.fill_buf()?.to_vec();
+
+        // If no data is received, the connection might have been closed
+        if received.is_empty() {
+            println!("No data received. Connection might be closed.");
+            break;
+        }
+
+        // Mark the bytes read as consumed so the buffer will not return them in a subsequent read
+        reader.consume(received.len());
+
+        let frame_locations = find_frame_starts(&received);
+        trace!("handle_connection: frame_locations.len() = {}", frame_locations.len());
+        let beast_messages: HashSet<Vec<u8>> = frame_locations
+            .iter()
+            .map(|(start_index, end_index)| received[*start_index..*end_index].to_vec())
+            .collect();
+
+        let mut mode = ModesReader::default();
+        mode.set_decoder_mode(DecoderMode::Beast);
+        mode.buffer = beast_messages.clone();
+        mode.feed_beast();
+
+        //for message in &beast_messages {
+            //debug!("Validating checksum: {:#02X}", message.as_hex());
+            //let received_checksum = u32::from(message[message.len()-3]) << 16
+            //                      | u32::from(message[message.len()-2]) << 8
+            //                      | u32::from(message[message.len()-1]);
+            //println!("Message: {:#02X}; CRC: {:#02X}", message.as_hex(), received_checksum);
+            //println!("Computed checksum: {:#02X}", crc(&message[0..message.len()-3], None));
+
+            //checksum_compare(&message, None);
+            //assert_eq!(checksum_compare(&message, None), true);
+        //}
+    }
+    
+
+    Ok(())
+}
+
+fn find_frame_starts(data: &[u8]) -> Vec<(usize, usize)> {
+    trace!("find_frame_starts: data.len() = {}", data.len());
+    let mut frames = Vec::new();
+    let mut i = 0;
+
+    while i < data.len() {
+        trace!("find_frame_start: data[i] = {:#02X}", data[i]);
+        if i + 2 < data.len() && data[i] != 0x1A && data[i + 1] == 0x1A && (data[i + 2] == 0x31 || data[i + 2] == 0x32 || data[i + 2] == 0x33) {
+            trace!("find_frame_starts: i         = {}",      i);
+            trace!("find_frame_starts: data[i]   = {:#02X}", data[i]); 
+            trace!("find_frame_starts: data[i+1] = {:#02X}", data[i+1]); 
+            trace!("find_frame_starts: data[i+2] = {:#02X}", data[i+2]); 
+            let start_index = i + 1; // advance to start of frame marked by 0x1A
+            let mut end_index = i + 2;
+            while end_index + 2 < data.len() && !(data[end_index] == 0x1A && (data[end_index + 1] == 0x31 || data[end_index + 1] == 0x32 || data[end_index + 1] == 0x33)) {
+                end_index += 1;
+            }
+            /*if end_index + 2 < data.len() {
+                trace!("find_frame_starts: start_index = {}", start_index);
+                trace!("find_frame_starts: end_index   = {}", end_index + 2);
+                frames.push((start_index, end_index + 2));
+                i = end_index + 2;*/
+            if end_index < data.len() {
+                frames.push((start_index, end_index));
+                i = end_index;
+            } else {
+                break;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    frames
 }
 
 fn main() {
     env_logger::init();
 
-    //
     let mut mode = ModesReader::default();
-    debug!("{:?}", mode);
     mode.set_decoder_mode(DecoderMode::Beast);
-    debug!("{:?}", mode);
-    debug!("");
 
     // In this version, the parse_beast_format function takes a reference to a HashSet<Vec<u8>> where each Vec<u8> represents a Beast format message. The function iterates over the HashSet, attempting to parse each Vec<u8> as a message, and collects successfully parsed messages into a Vec<AdsbMessage>. The main function demonstrates how to use this function with a dummy HashSet containing two Beast messages.
     // Example usage of the `parse_beast_format` function
     // Create a dummy HashSet with Beast format message bytes
-    let mut beast_messages = HashSet::new();
+    //let mut beast_messages = HashSet::new();
     //beast_messages.insert(message);
 
     // Parse the Beast format messages
@@ -884,6 +929,7 @@ fn main() {
     */
 
     //////////////////// BEAST VALIDATION SECTION
+    /*
     let mut data: Vec<u8>;
     data = vec![
         0x1A, // Message start
@@ -896,6 +942,8 @@ fn main() {
     beast_messages.insert(data);
     mode.buffer = beast_messages.clone();
     mode.feed_beast();
+    */
+
     //assert_eq!(mode.message, [0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97]);
     //assert_eq!(mode.signal, 0xFF); //TODO
     //assert_eq!(mode.parity, true); //TODO
@@ -931,7 +979,9 @@ fn main() {
     //assert_eq!(mode.message, [0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27]);
     //assert_eq!(mode.signal, 0x
 
+    /*
     // Test escape discard error
+    let mut data: Vec<u8>;
     data = vec![
         0x1a, // Message start
         0x31, // Message type: AC
@@ -941,7 +991,6 @@ fn main() {
     //let beast_message = mode.parse_beast_message(&mut reader);
     //assert_eq!(beast_message.unwrap_err().to_string(), "failed to fill whole buffer");
 
-    /*
     // Test read unread error
     data = vec![
         0x1a, // Message start
@@ -1044,7 +1093,7 @@ fn main() {
         println!("{:X}", el);
     }*/
 
-    //////////////////// CHECKSUM VALIDATION SECTION
+    //////////////////// START CHECKSUM VALIDATION TEST SECTION
     // example 1: expect 0x2218b2
     /*
     let mut msg: Vec<u8> = vec![0x8F, 0x4D, 0x20, 0x23, 0x58, 0x7F, 0x34, 0x5E, 0x35, 0x83, 0x7E, 0x22, 0x18, 0xB2];
@@ -1064,22 +1113,21 @@ fn main() {
     assert_eq!(crc(&msg, Some(SHORT_MSG_BITS)), 0x2218B2);
     // automatically determine bits size
     assert_eq!(crc(&msg, None), 0x2218B2);
-
-    msg = vec![143, 77, 32, 35, 88, 127, 52, 94, 53, 131, 126, 34, 24, 178];
-    // explicitly set bits size
-    assert_eq!(checksum_compare(&msg, Some(LONG_MSG_BITS)), true);
-    // automatically determine bits size
-    assert_eq!(checksum_compare(&msg, None), true);
     */
+
+    let mut data: Vec<u8>;
+    data = vec![143, 77, 32, 35, 88, 127, 52, 94, 53, 131, 126, 34, 24, 178];
+    // explicitly set bits size
+    assert_eq!(checksum_compare(&data, Some(LONG_MSG_BITS)), true);
+    // automatically determine bits size
+    assert_eq!(checksum_compare(&data, None), true);
 
     // Tests pulled from https://github.com/flightrac/modes-crc/blob/master/test/crc_checker.js
     // test valid checksum for short message
-    let mut data: Vec<u8>;
     data = vec![0x5D, 0x4D, 0x20, 0x23, 0x7A, 0x55, 0xA6]; // 40, 0, 16, 36, 220, 121, 76
     assert_eq!(checksum(&data, Some(SHORT_MSG_BITS)), 0x7A55A6);
 
     // test invalid checksum for short message
-    let mut data: Vec<u8>;
     data = vec![0x28, 0x00, 0x10, 0x24, 0xDC, 0x79, 0x4C]; // 40, 0, 16, 36, 220, 121, 76
     assert_eq!(checksum_compare(&data, Some(SHORT_MSG_BITS)), false);
 
@@ -1098,4 +1146,28 @@ fn main() {
     // test get message bits length from data frame size
     data = vec![0x5D, 0x4D, 0x20, 0x23, 0x7A, 0x55, 0xA6];
     assert_eq!(checksum(&data, None), 0x7A55A6);
+    //////////////////// END CHECKSUM VALIDATION TEST SECTION
+
+    // Connect to the server
+    let result = TcpStream::connect("127.0.0.1:4000");
+    match result {
+        Ok(mut stream) => {
+            debug!("Successfully connected to the server at 127.0.0.1:4000");
+            // Spawn a new thread to handle the connection
+            thread::spawn(move || {
+                if let Err(e) = handle_connection(&mut stream) {
+                    eprintln!("Error handling connection: {}", e);
+                }
+            });
+
+            // Keep the main thread alive while the connection thread does its work
+            // This is a simple way to keep the program running for demonstration purposes
+            loop {
+                thread::park();
+            }
+        }
+        Err(e) => {
+            error!("Failed to connect to the server: {}", e);
+        }
+    }
 }
