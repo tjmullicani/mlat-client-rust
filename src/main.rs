@@ -1,6 +1,8 @@
 extern crate log;
 
-use clap::{command, Parser, ArgGroup};
+use clap::{command, Parser};
+use clap::error::ErrorKind;
+use clap::CommandFactory;
 use log::{LevelFilter};
 use log::{trace, debug, info, warn, error};
 use env_logger::Builder;
@@ -72,6 +74,23 @@ fn main() {
     //let remote: bool = cli.remote.clone();
     
     println!("{:?}", cli);
+    let address: &str;
+    let port: &str;
+    let vec_server: Vec<&str> = cli.server.split(':').collect();
+    match vec_server.as_slice() {
+        [a, p] => {
+            address = a;
+            port = p;
+        },
+        _ => {
+            let mut cmd = Cli::command();
+            cmd.error(
+                ErrorKind::InvalidValue,
+                "Server should be in 'host:port' format"
+            ).exit();
+        }
+    }
+    info!("address = {}; port = {}", address, port);
 
     error!("error");
     warn!("warn");
