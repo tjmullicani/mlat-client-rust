@@ -8,6 +8,14 @@ use log::{trace, debug, info, warn, error};
 use env_logger::Builder;
 use std::str::FromStr;
 
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::task;
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 //#[group(args = ["lat", "lon", "alt"], required = false)]
@@ -62,7 +70,8 @@ struct Cli {
 
 // References:
 // https://docs.rs/clap/latest/clap/enum.ArgAction.html
-fn main() {
+#[tokio::main]
+async fn main() -> tokio::io::Result<()> {
     let cli = Cli::parse();
 
     // setup logging
@@ -98,8 +107,111 @@ fn main() {
     debug!("debug");
     trace!("trace");
 
+    /*
+    let (tx, rx) = mpsc::channel();
+
+    let tx1 = tx.clone();
+    thread::spawn(move || {
+        let vals = vec![
+            String::from("hi"),
+            String::from("from"),
+            String::from("the"),
+            String::from("thread"),
+        ];
+
+        for val in vals {
+            tx1.send(val).unwrap();
+            thread::sleep(Duration::from_secs(1));
+        }
+    });
+
+    thread::spawn(move || {
+        let vals = vec![
+            String::from("more"),
+            String::from("messages"),
+            String::from("for"),
+            String::from("you"),
+        ];
+
+        for val in vals {
+            tx.send(val).unwrap();
+            thread::sleep(Duration::from_secs(1));
+        }
+    });
+
+    for received in rx {
+        println!("Got: {}", received);
+    }
+    */
+
+    // Start the server task.
+    let server_handle = task::spawn(async {
+        run_server("127.0.0.1:8080").await
+    });
+
+    // Start the client task.
+    let client_handle = task::spawn(async {
+        run_client("127.0.0.1:8080").await
+    });
+
+    // Wait for both server and client to complete.
+    let _ = tokio::try_join!(server_handle, client_handle);
+
+    Ok(())
+}
+
+/// Runs the server that listens on the specified address.
+async fn run_server(addr: &str) -> tokio::io::Result<()> {
+    // Bind the server to the specified address.
+    let listener = TcpListener::bind(addr).await?;
+    println!("Server running on {}", addr);
+
+    loop {
+        // Accept incoming connections.
+        let (mut socket, _) = listener.accept().await?;
+
+        // Spawn a new task to handle the connection.
+        task::spawn(async move {
+            let mut buf = [0; 1024];
+
+            // Read data from the socket.
+            match socket.read(&mut buf).await {
+                Ok(n) if n == 0 => return, // Connection was closed.
+                Ok(n) => {
+                    println!("Received: {}", String::from_utf8_lossy(&buf[..n]));
+                    // Echo the data back to the client.
+                    if let Err(e) = socket.write_all(&buf[..n]).await {
+                        println!("Failed to write to socket: {}", e);
+                    }
+                }
+                Err(e) => {
+                    println!("Failed to read from socket: {}", e);
+                }
+            }
+        });
+    }
+}
+
+/// Runs the client that connects to the specified address.
+async fn run_client(addr: &str) -> tokio::io::Result<()> {
+    // Connect to the server.
+    let mut stream = TcpStream::connect(addr).await?;
+    println!("Client connected to {}", addr);
+
+    // Send a message to the server.
+    let msg = "Hello from client!";
+    stream.write_all(msg.as_bytes()).await?;
+    println!("Client sent: {}", msg);
+
+    // Read the server's response.
+    let mut buf = [0; 1024];
+    let n = stream.read(&mut buf).await?;
+    println!("Client received: {}", String::from_utf8_lossy(&buf[..n]));
+
+    Ok(())
+}
+
     //ctrlc::set_handler(move || {
     //  debug!("received Ctrl+C!");
     //})
     //.expect("Error setting Ctrl-C handler");
-}

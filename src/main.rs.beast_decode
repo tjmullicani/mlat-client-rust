@@ -1,0 +1,81 @@
+use beast::{self, BeastBuffer};
+
+fn main() {
+    let mut bb: BeastBuffer = BeastBuffer::default();
+
+    // test from https://github.com/firestuff/adsb-tools/blob/master/protocols/beast.md
+    bb.buffer = hex::decode("1a32083e27b6cb6a1a1a00a1841a1ac3b31d").unwrap();
+    bb.read_single_frame().unwrap();
+    println!("{}", bb.to_string());
+    println!("{}", bb.frames[0].hex);
+    println!("");
+    //assert_eq!(bb.frames[0].data, "00A1841AC3B31D");
+
+    // tests from https://github.com/cjkreklow/go-adsb/blob/main/beast/frame_test.go
+    bb.frames.clear();
+    bb.buffer = hex::decode("1a321a1af933baf325c45da99adad95ff61a32083e27b6cb6a1a1a00a1841a1ac3b31d1a32").unwrap();
+    bb.read_beast_buffer().unwrap();
+    //println!("{}", bb.to_string());
+    //println!("");
+    //assert_eq!(bb.frames[0].data, "5DA99ADAD95FF6");
+    //assert_eq!(bb.frames[1].data, "00A1841AC3B31D");
+
+    // testUnmarshalShort
+    bb.frames.clear();
+    bb.buffer = hex::decode("1affffff").unwrap();
+    //assert_eq!(bb.read_single_frame().unwrap_err().to_string(), "invalid message: message type 0x1A is not one of: [0x,31, 0x32, 0x33]");
+
+    // testUnmarshalBadLength1
+    bb.frames.clear();
+    bb.buffer = hex::decode("1a31ffffffffffffff1a1a").unwrap();
+    //assert_eq!(bb.read_single_frame().unwrap_err().to_string(), "invalid message: expected 11 bytes, received 10");
+
+    // testUnmarshalBadLength2
+    bb.frames.clear();
+    bb.buffer = hex::decode("1a32ffff1a1affff1a1affff").unwrap();
+    //assert_eq!(bb.read_single_frame().unwrap_err().to_string(), "invalid message: expected 16 bytes, received 10");
+
+    // testUnmarshalBadLength3
+    bb.frames.clear();
+    bb.buffer = hex::decode("1a33ffffffffffffffffffffffffffffffffffffffffffffff").unwrap();
+    //assert_eq!(bb.read_single_frame().unwrap_err().to_string(), "invalid message: expected 23 bytes, received 25");
+
+    // testUnmarshalBadEscape
+    bb.frames.clear();
+    bb.buffer = hex::decode("1a31ffffffffffffffffffffffffff1a").unwrap();
+    //assert_eq!(bb.read_single_frame().unwrap_err().to_string(), "invalid message: expected 11 bytes, received 16");
+
+    // testUnmarshalBadType
+    bb.frames.clear();
+    bb.buffer = hex::decode("1a3affffffffffffffffff").unwrap();
+    //assert_eq!(bb.read_single_frame().unwrap_err().to_string(), "invalid message: message type 0x1A is not one of: [0x,31, 0x32, 0x33]");
+    
+    // testUnmarshalNoType
+    bb.frames.clear();
+    bb.buffer = hex::decode("ff00ff00ff00ff00ff00").unwrap();
+    //assert_eq!(bb.read_single_frame().unwrap_err().to_string(), "invalid message: message type 0xFF is not one of: [0x,31, 0x32, 0x33]");
+
+    // testUnmarshalBytes
+    bb.frames.clear();
+    bb.buffer = hex::decode("1a321a1af933baf325c45da99adad95ff6").unwrap();
+    bb.read_single_frame().unwrap();
+    //println!("{}", bb.to_string());
+    //println!("");
+    //assert_eq!(bb.frames[0].data, "5DA99ADAD95FF6");
+
+    // testUnmarshalBytes
+    bb.frames.clear();
+    bb.buffer = hex::decode("1a321af933baf325c45da99adad95ff6").unwrap();
+    bb.read_single_frame().unwrap();
+    //println!("{}", bb.to_string());
+    //println!("");
+    //assert_eq!(bb.frames[0].data, "5DA99ADAD95FF6");
+
+    // testUnmarshalMarshal
+    bb.frames.clear();
+    bb.buffer = hex::decode("1a321a1af933baf325c45da99adad95ff6").unwrap();
+    bb.read_single_frame().unwrap();
+    //println!("{}", bb.to_string());
+    //println!("");
+    //assert_eq!(bb.frames[0].data, "5DA99ADAD95FF6");
+}
