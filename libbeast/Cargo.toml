@@ -1,0 +1,10 @@
+[package]
+name = "libbeast"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+adsb_deku = "0.7.0"
+hex-slice = "0.1.4"
