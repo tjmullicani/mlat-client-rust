@@ -245,7 +245,7 @@ impl ModesReader {
     /// or an `io::Error` if an error occurs during reading.
     //fn beast(&mut self, buffer: ???, max_messages: i32) -> ??? {
     //pub fn feed_beast(&mut self) -> (i64, (), bool) {
-    pub fn feed_beast(&mut self, mut buffer: Vec<u8>) {
+    pub fn feed_beast(&mut self, mut buffer: Vec<u8>) -> Vec<BeastMessage> {
         let mut timestamp: u64 = 0;
         let mut timestamp_bytes: [u8; 6] = [0; 6];
         let mut signal: u8 = 0;
@@ -303,6 +303,7 @@ impl ModesReader {
             let mut reminder = Vec::new();
             for (i, &m) in msg.iter().enumerate() {
                 if m == 0x1A && i < msg.len() - 1 {
+                    // rewind 0x1a, except when it is at the last bit
                     reminder.extend_from_slice(&[m, m]);
                 } else {
                     reminder.push(m);
@@ -347,58 +348,67 @@ impl ModesReader {
                 },
             };
 
+            if ms == [0x00, 0x00] {
+                debug!("Empty byte Mode-AC message, skipping");
+                continue;
+            }
+
+            println!("mm = {:#02X}", mm.as_hex());
+            println!("ms = {:#02X}", ms.as_hex());
             // set values directly instead of to 0 first
             let mut frame: BeastMessage = BeastMessage {
-                message_length: 0,
-                timestamp: 0,
-                signal_level: 0,
-                message: Vec::new(),
+                message_type: msgtype,
+                message_length: ms.len(),
+                timestamp: u64::from_be_bytes([
+                    0, 0, // Pad to 8 bytes
+                    mm[1],
+                    mm[2],
+                    mm[3],
+                    mm[4],
+                    mm[5],
+                    mm[6],
+                ]),
+                signal_level: mm[7],
+                message: ms.clone(),
                 message_parsed: None,
             };
 
-            frame.timestamp = u64::from_be_bytes([
-                0, 0, // Pad to 8 bytes
-                mm[1],
-                mm[2],
-                mm[3],
-                mm[4],
-                mm[5],
-                mm[6],
-            ]);
-
-            frame.signal_level = mm[7];
-            println!("mm = {:#02X}", mm.as_hex());
-            println!("ms = {:#02X}", ms.as_hex());
-            match Frame::from_bytes((&ms, 0)) {
-                Ok((rest, message)) => {
-                    frame.message_parsed = Some(message);
-                    println!("message_parsed = {}", frame.message_parsed.clone().unwrap().to_string());
-                },
-                Err(e) => {
-                    warn!("error parsing frame: {}", e);
-                },
+            if msgtype == 0x32 || msgtype == 0x33 {
+                match Frame::from_bytes((&ms, 0)) {
+                    Ok((rest, message)) => {
+                        frame.message_parsed = Some(message);
+                        println!("message_parsed = {}", frame.message_parsed.clone().unwrap().to_string());
+                    },
+                    Err(e) => {
+                        warn!("error parsing frame: {}", e);
+                    },
+                }
             }
 
-            frame.message = ms;
             frames.push(frame);
         }
 
-        for frame in frames {
+        for frame in &frames {
             println!("new frame");
             println!("---------");
+            println!("frame.message_type: {}", frame.message_type);
             println!("frame.message_length: {}", frame.message_length);
             println!("frame.timestamp: {}", frame.timestamp);
             println!("frame.signal_level: {}", frame.signal_level);
             println!("frame.message: {:#02X}", frame.message.as_hex());
-            if let Some(message) = frame.message_parsed {
-                println!("frame.message_parsed:");
-                println!("---------------------");
-                println!("{}", message.to_string());
-            } else {
-                println!("frame.message_parsed: error");
+            if frame.message_type == 0x32 || frame.message_type == 0x33 {
+                if let Some(message) = &frame.message_parsed {
+                    println!("frame.message_parsed:");
+                    println!("---------------------");
+                    println!("{}", message.to_string());
+                } else {
+                    println!("frame.message_parsed: error");
+                }
             }
             println!("");
         }
+
+        frames
         /////////
 
 /*
@@ -889,6 +899,7 @@ struct AdsbMessage {
 /// Represents a Mode-S Beast binary message.
 #[derive(Debug)]
 pub struct BeastMessage {
+    pub message_type: u8,
     pub message_length: usize,
     pub timestamp: u64,
     pub signal_level: u8,

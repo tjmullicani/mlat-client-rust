@@ -20,6 +20,7 @@ logs
 *.out
 build/
 *.pid
+*.txt
 pids
 
 coverage

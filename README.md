@@ -1,6 +1,12 @@
 # mlat-client
 
 WORK IN PROGRESS PORT OF MLAT-CLIENT
+IN PROGRESS:
+  * BEAST MESSAGE DECODING
+  * TCP PORT STREAMING
+  * UDP PORT STREAMING
+TODO:
+  * Multilateration math
 
 This is a client that selectively forwards Mode S messages to a
 server that resolves the transmitter position by multilateration of the same
@@ -17,6 +23,12 @@ TODO
 
 If you are connecting to a third party multilateration server, contact the
 server's administrator for configuration instructions.
+
+```console
+$ cat beast-test-capture.bin | nc -l 127.0.0.1 3000
+$ socat -u UDP4-RECVFROM:30004,reuseaddr,fork exec:"xxd -"
+$ cargo run -- --lat 1 --lon 1 --alt 1 --user 1 --server 127.0.0.1:30004
+```
 
 ## Supported receivers
 
