@@ -1,20 +1,9 @@
-use std::io::{self, Read};
-use std::net::TcpStream;
-use std::net::UdpSocket;
-use std::net::Ipv4Addr;
-use std::io::BufReader;
-use std::io::BufRead;
-use std::io::Write;
-use std::time::Instant;
+use std::net::{Ipv4Addr, TcpStream, UdpSocket};
+use std::io::{BufReader, BufRead, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::collections::HashSet;
 use tokio::sync::mpsc;
-use tokio::net::TcpSocket;
 use mpsc::Sender;
 use mpsc::Receiver;
-use std::time;
-use std::thread;
-use futures::future::join_all;
 use tokio::task;
 
 use clap::{command, Parser};
@@ -28,7 +17,6 @@ use std::str::FromStr;
 extern crate log;
 extern crate hex_slice;
 use hex_slice::AsHex;
-use futures::executor::block_on;
 
 mod modes;
 use crate::modes::modes_reader::*;
@@ -111,51 +99,11 @@ async fn receive_data_tcp(tx: Sender<Vec<BeastMessage>>) {
     let mut stream = TcpStream::connect("127.0.0.1:30005").unwrap();
     //let mut stream = TcpStream::connect("172.16.11.51:30005").unwrap();
 
-
-/*
-    // change libbeast to return entire struct instead of using self.
-    // #####################################################################
-    let mut reader = BufReader::new(stream);
-            
-    loop {  
-        // Read current data in the TcpStream
-        let received: Vec<u8> = reader.fill_buf()?.to_vec();
-    
-        // If no data is received, the connection might have been closed
-        if received.is_empty() {
-            println!("No data received. Connection might be closed.");
-            break;
-        }
-        
-        // Mark the bytes read as consumed so the buffer will not return them in a subsequent read
-        reader.consume(received.len());
-        
-        let frame_locations = find_frame_starts(&received);
-        trace!("handle_connection: frame_locations.len() = {}", frame_locations.len());
-        let beast_messages: HashSet<Vec<u8>> = frame_locations
-            .iter()
-            .map(|(start_index, end_index)| received[*start_index..*end_index].to_vec())
-            .collect();
-        
-        let mut mode = ModesReader::default();
-        mode.set_decoder_mode(DecoderMode::Beast);
-        mode.buffer = beast_messages.clone();
-        match mode.feed_beast() {
-            Ok(o) => {},
-            Err(e) => error!("handle_connection: {}", e),
-        }
-        warn!("Extracted {} valid messages against CRC", mode.received_messages);
-    }
-    // #####################################################################
-*/
-
-
     // Array with a fixed size
     let mut reader = BufReader::new(stream);
     let mut received: Vec<u8> = Vec::new();
     let mut total_received_bytes = 0;
     let mut last_received = monotonic_time();
-    let mut residual: Vec<u8> = Vec::new();
     let mut m = ModesReader::default();
     m.set_decoder_mode(DecoderMode::Beast);
 
@@ -172,134 +120,33 @@ async fn receive_data_tcp(tx: Sender<Vec<BeastMessage>>) {
 
         reader.consume(received.len());
 
-        m.feed_beast(received.clone());
-        // if let Err(_) = tx.send(m.feed_beast(received.clone())).await {
-        //     println!("receiver dropped");
-        //     return;
-        // }
+        let frames = m.feed_beast(received.clone());
+        for frame in &frames {
+            println!("new frame");
+            println!("---------");
+            println!("frame.message_type: {:#02X}", frame.message_type);
+            println!("frame.message_length: {}", frame.message_length);
+            println!("frame.timestamp: {}", frame.timestamp);
+            println!("frame.signal_level: {}", frame.signal_level);
+            println!("frame.message: {:#02X}", frame.message.as_hex());
+            if frame.message_type == MESSAGE_TYPE_MODE_S || frame.message_type == MESSAGE_TYPE_MODE_L {
+                if let Some(message) = &frame.message_parsed {
+                    println!("frame.message_parsed:");
+                    println!("---------------------");
+                    println!("{}", message.to_string());
+                } else {
+                    println!("frame.message_parsed: error");
+                }
+            }
+            println!("");
+        }
 
-        /*
-        println!("Buffer: {:#02X}", received.as_hex());
-        m.feed_beast().unwrap();
-
-        println!("handle_connection: number of beast messages = {}", frame_locations.len());
-        let mut beast_messages: HashSet<Vec<u8>> = frame_locations
-            .iter()
-            .map(|(start_index, end_index)| buf[*start_index..*end_index].to_vec())
-            .collect();
-        beast_messages.retain(|k| k.len() > 2);
-
-        //m.buffer = beast_messages;
-        m.set_buffer(beast_messages);
-        m.feed_beast();
-
-        total_received_bytes += len;
-        last_received = monotonic_time();
-
-        println!("Total received bytes: {}", total_received_bytes);
-        println!("Last received: {:?}", last_received);
-        if let Err(_) = tx.send(m.clone()).await {
+        if let Err(_) = tx.send(frames).await {
             println!("receiver dropped");
             return;
         }
-        */
     }
 }
-
-// fn feed(rx_bytes: &Vec<u8>) -> (HashSet<Vec<u8>>, usize) {
-//     // split buffer into multiple messages
-//     let (frame_locations, last_read_index) = find_frame_starts(&rx_bytes);
-//     println!("handle_connection: number of beast messages = {}", frame_locations.len());
-//     let mut beast_messages: HashSet<Vec<u8>> = frame_locations
-//         .iter()
-//         .map(|(start_index, end_index)| rx_bytes[*start_index..*end_index].to_vec())
-//         .collect();
-
-//     // Clone the buffer to allow for mutable access
-
-//     //beast_messages.retain(|k| k[0] == 0x1A);
-//     beast_messages.retain(|k| k.len() > 2);
-//     for message in beast_messages.iter() {
-//         println!("feed_beast: ");
-//         println!("feed_beast: --- NEW START OF FRAME ---");
-//         println!("feed_beast: frame = {:#02X}", message.as_hex());
-
-//         //if message[0] != 0x1A {
-//         //    println!("Lost sync with input stream: expected a 0x1A marker but found {:#02X} instead", message[0]);
-//             // drop message
-//         //}
-
-//         //if message.len() < 2 {
-//         //    println!("Message is less than two bytes");
-//         //    continue;
-//         //}
-
-//         let mut message_len = 0;
-//         let mut message_count = 0;
-//         match message[1] as char {
-//             '1' => {
-//                 message_len = 2;
-//             },
-//             '2' => {
-//                 message_len = 7;
-//             },
-//             '3' => {
-//                 message_len = 14;
-//             },
-//             '4' => {
-//                 message_len = 14;
-//             },
-//             '5' => {
-//                 message_len = 21;
-//                 let has_timestamp_signal = 0;
-//             },
-//             _ => {
-//                 let error_pending = 1;
-//                 if message_count > 0 {
-//                     //return 0;
-//                 }
-//                 println!("Lost sync with input stream: unexpected message type {:#02X} after 0x1A marker", message[1]);
-//                 // drop message
-//             }
-//         }
-//         println!("message_len = {}", message_len);
-//     }
-//     (beast_messages, last_read_index)
-// }
-
-// fn find_frame_starts(data: &[u8]) -> (Vec<(usize, usize)>, usize) {
-//     println!("find_frame_starts: data.len() = {}", data.len());
-//     let mut frames = Vec::new();
-//     let mut i = 0;
-//     let mut last_read_index = 0;
-
-//     while i < data.len() {
-//         //println!("find_frame_start: data[i] = {:#02X}", data[i]);
-//         // handle case where buffer starts with BEAST_ESCAPE, or search buffer
-//         // for BEAST_ESCAPE + (0x31|0x32|0x33)
-//         if (i + 2 < data.len() && data[i] == BEAST_ESCAPE && (data[i + 2] == 0x31 || data[i + 2] == 0x32 || data[i + 2] == 0x33)) || i + 2 < data.len() && data[i] != BEAST_ESCAPE && data[i + 1] == BEAST_ESCAPE && (data[i + 2] == 0x31 || data[i + 2] == 0x32 || data[i + 2] == 0x33) {
-//             //println!("find_frame_starts: i         = {}",      i);
-//             //println!("find_frame_starts: data[i]   = {:#02X}", data[i]); 
-//             //println!("find_frame_starts: data[i+1] = {:#02X}", data[i+1]); 
-//             //println!("find_frame_starts: data[i+2] = {:#02X}", data[i+2]); 
-//             let start_index = i + 1; // advance to start of frame marked by BEAST_ESCAPE
-//             let mut end_index = i + 2;
-//             while end_index + 2 < data.len() && !(data[end_index] == BEAST_ESCAPE && (data[end_index + 1] == 0x31 || data[end_index + 1] == 0x32 || data[end_index + 1] == 0x33)) {
-//                 end_index += 1;
-//             }
-//             if end_index < data.len() {
-//                 frames.push((start_index, end_index));
-//                 i = end_index;
-//                 last_read_index = end_index;
-//             } else {
-//                 break;
-//             }
-//         } else {
-//             i += 1;
-//         }
-//     }
-//     (frames, last_read_index)
-// }
 
 #[tokio::main]
 async fn main() -> tokio::io::Result<()> {
@@ -348,7 +195,7 @@ async fn main() -> tokio::io::Result<()> {
     task::spawn_blocking({
         move || {
           tokio::runtime::Handle::current().block_on(
-            fn2(dest_address, rx)
+            transmit_data(dest_address, rx)
           )
         }
       });
@@ -356,8 +203,8 @@ async fn main() -> tokio::io::Result<()> {
     Ok(())
 }
 
-async fn fn2(dest_address: String, mut rx: Receiver<Vec<BeastMessage>>) {
-    warn!("fn2 run");
+async fn transmit_data(dest_address: String, mut rx: Receiver<Vec<BeastMessage>>) {
+    warn!("transmit_data run");
     let dest_proto = "udp"; // udp or tcp
     //let dest_address = "127.0.0.1:30004";
 
@@ -366,12 +213,15 @@ async fn fn2(dest_address: String, mut rx: Receiver<Vec<BeastMessage>>) {
         socket.connect(dest_address).unwrap();
 
         loop {
-            trace!("fn2 loop");
+            trace!("transmit_data loop");
             if let Some(frames) = rx.recv().await {
                 for frame in frames {
                     println!("{:#02X}", frame.message.as_hex());
-                    let len = socket.send(&frame.message).unwrap();
-                    println!("Sent {} bytes", len);
+                    // FIXME: for testing, do not print 0x31 type messages
+                    if frame.message_type != 0x31 {
+                        let len = socket.send(&frame.message).unwrap();
+                        println!("Sent {} bytes", len);
+                    }
                 }
             } else {
                 break;
@@ -381,7 +231,7 @@ async fn fn2(dest_address: String, mut rx: Receiver<Vec<BeastMessage>>) {
         let mut socket = TcpStream::connect(dest_address).unwrap();
 
         loop {
-            warn!("fn2 loop");
+            warn!("transmit_data loop");
             if let Some(frames) = rx.recv().await {
                 for frame in frames {
                     println!("{:#02X}", frame.message.as_hex());
