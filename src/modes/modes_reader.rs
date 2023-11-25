@@ -28,24 +28,26 @@ use std::collections::HashMap;
 use std::time::{SystemTime, Duration};
 use std::net::{TcpStream, SocketAddr, TcpListener};
 use hex_slice::AsHex;
-use std::error::Error;
+//use std::error::Error;
 use std::fmt;
 use std::io::Cursor;
-use std::io::ErrorKind;
 use log::{error, warn, info, debug, trace};
 use rustc_serialize::hex::ToHex;
 use hex;
 use std::thread;
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{Error, ErrorKind};
 
-mod modes;
+use adsb_deku::deku::DekuContainerRead;
+use adsb_deku::Frame;
 
 use crate::modes::modes::*;
 use crate::modes::modes_crc::*;
+//use libbeast::{self, read_beast_buffer};
 
 /* decoder modes */
 #[derive(Eq, PartialEq, Clone, Debug)]
-enum DecoderMode {
+pub enum DecoderMode {
     Beast,             /* Beast binary, freerunning 48-bit timestamp @ 12MHz */
     Radarcape,         /* Beast binary, 1GHz Radarcape timestamp, UTC synchronized from GPS */
     RadarcapeEmulated, /* Beast binary, 1GHz Radarcape timestamp, not synchronized */
@@ -68,12 +70,11 @@ const SYNTHETIC_TIMESTAMP_START: u64 = 0xFF004D4C4154;
 const SYNTHETIC_TIMESTAMP_END: u64 = SYNTHETIC_TIMESTAMP_START + 10;
 
 /* a ModesReader object */
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ModesReader {
     /* decoder characteristics */
     decoder_mode: DecoderMode,
     decoder_mode_string: String,
-    buffer: HashSet<Vec<u8>>,
     frequency: u64,
     epoch: String,
     last_timestamp: u64, /* last seen timestamp */
@@ -104,7 +105,6 @@ impl Default for ModesReader {
             /* minimal init */
             decoder_mode: DecoderMode::None,
             decoder_mode_string: String::from(""),
-            buffer: HashSet::new(),
             frequency: 0,
             epoch: String::from(""),
             last_timestamp: 0,
@@ -127,7 +127,6 @@ impl ModesReader {
     fn new(
         decoder_mode: DecoderMode,
         decoder_mode_string: String,
-        buffer: HashSet<Vec<u8>>,
         frequency: u64,
         epoch: String,
         last_timestamp: u64, /* last seen timestamp */
@@ -147,7 +146,6 @@ impl ModesReader {
         ModesReader { 
             decoder_mode,
             decoder_mode_string,
-            buffer,
             frequency,
             epoch,
             last_timestamp,
@@ -166,7 +164,7 @@ impl ModesReader {
         }
     }
 
-    fn set_decoder_mode(&mut self, newmode: DecoderMode) {
+    pub fn set_decoder_mode(&mut self, newmode: DecoderMode) {
         self.decoder_mode = newmode.clone();
         match newmode {
             DecoderMode::Beast => {
@@ -247,7 +245,7 @@ impl ModesReader {
     /// or an `io::Error` if an error occurs during reading.
     //fn beast(&mut self, buffer: ???, max_messages: i32) -> ??? {
     //pub fn feed_beast(&mut self) -> (i64, (), bool) {
-    pub fn feed_beast(&mut self) -> io::Result<BeastMessage> {
+    pub fn feed_beast(&mut self, mut buffer: Vec<u8>) {
         let mut timestamp: u64 = 0;
         let mut timestamp_bytes: [u8; 6] = [0; 6];
         let mut signal: u8 = 0;
@@ -259,10 +257,152 @@ impl ModesReader {
         let eod: u8 = 0;
         let error_pending: bool = false;
 
-        // Clone the buffer to allow for mutable access
-        let buffer_clone = self.buffer.clone();
+        /////////
+        let mut messages_mlat: Vec<Vec<u8>> = Vec::new();
+        let mut msg: Vec<u8> = Vec::new();
+        let mut iter =  buffer.iter().peekable();
 
-        for message in buffer_clone.iter() {
+        // process the buffer until the last divider <esc> 0x1a
+        // then, reset the self.buffer with the remainder
+        while let Some(&byte) = iter.next() {
+            println!("byte is {:#02X}", byte);
+            match byte {
+                0x1A if iter.peek() == Some(&&0x1A) => {
+                    // If the current and next bytes are 0x1A, append one 0x1A to `msg`
+                    msg.push(0x1A);
+                    iter.next(); // Skip the next byte as it's part of the escape sequence
+                }
+                0x1A if iter.peek().is_none() => {
+                    // Special case where the last byte is 0x1A
+                    msg.push(0x1A);
+                }
+                0x1A if iter.peek() == Some(&&0x31) => {
+                    println!("new frame");
+                    // Start new frame
+                    if !msg.is_empty() { messages_mlat.push(msg.clone()); msg.clear(); }
+                }
+                0x1A if iter.peek() == Some(&&0x32) => {
+                    println!("new frame");
+                    // Start new frame
+                    if !msg.is_empty() { messages_mlat.push(msg.clone()); msg.clear(); }
+                }
+                0x1A if iter.peek() == Some(&&0x33) => {
+                    println!("new frame");
+                    // Start new frame
+                    if !msg.is_empty() { messages_mlat.push(msg.clone()); msg.clear(); }
+                }
+                _ => {
+                    // Otherwise, append the current byte to `msg`
+                    msg.push(byte);
+                }
+            }
+        }
+
+        // Save the remander for the next reading cycle, if not empty
+        if !msg.is_empty() {
+            let mut reminder = Vec::new();
+            for (i, &m) in msg.iter().enumerate() {
+                if m == 0x1A && i < msg.len() - 1 {
+                    reminder.extend_from_slice(&[m, m]);
+                } else {
+                    reminder.push(m);
+                }
+            }
+            buffer = std::iter::once(0x1A).chain(reminder).collect();
+        } else {
+            buffer.clear();
+        }
+
+        // Extract messages
+        let mut frames: Vec<BeastMessage> = Vec::new();
+        for mm in messages_mlat {
+            let msgtype = mm[0];
+
+            println!("mm frame is {:#02X}", mm.as_hex());
+            let ms: Vec<u8> = match msgtype {
+                0x31 => {
+                    if mm.len() != 10 {
+                        warn!("invalid message: expected 11 bytes, received {}", mm.len() + 1);
+                        continue;
+                    }
+                    mm[8..10].to_vec()
+                },
+                0x32 => {
+                    if mm.len() != 15 {
+                        warn!("invalid message: expected 16 bytes, received {}", mm.len() + 1);
+                        continue;
+                    }
+                    mm[8..15].to_vec()
+                },
+                0x33 => {
+                    if mm.len() != 22 {
+                        warn!("invalid message: expected 23 bytes, received {}", mm.len() + 1);
+                        continue;
+                    }
+                    mm[8..22].to_vec()
+                },
+                _ => {
+                    warn!("invalid message: message type {:#02X} is not one of: [0x31, 0x32, 0x33]", msgtype);
+                    continue;
+                },
+            };
+
+            // set values directly instead of to 0 first
+            let mut frame: BeastMessage = BeastMessage {
+                message_length: 0,
+                timestamp: 0,
+                signal_level: 0,
+                message: Vec::new(),
+                message_parsed: None,
+            };
+
+            frame.timestamp = u64::from_be_bytes([
+                0, 0, // Pad to 8 bytes
+                mm[1],
+                mm[2],
+                mm[3],
+                mm[4],
+                mm[5],
+                mm[6],
+            ]);
+
+            frame.signal_level = mm[7];
+            println!("mm = {:#02X}", mm.as_hex());
+            println!("ms = {:#02X}", ms.as_hex());
+            match Frame::from_bytes((&ms, 0)) {
+                Ok((rest, message)) => {
+                    frame.message_parsed = Some(message);
+                    println!("message_parsed = {}", frame.message_parsed.clone().unwrap().to_string());
+                },
+                Err(e) => {
+                    warn!("error parsing frame: {}", e);
+                },
+            }
+
+            frame.message = ms;
+            frames.push(frame);
+        }
+
+        for frame in frames {
+            println!("new frame");
+            println!("---------");
+            println!("frame.message_length: {}", frame.message_length);
+            println!("frame.timestamp: {}", frame.timestamp);
+            println!("frame.signal_level: {}", frame.signal_level);
+            println!("frame.message: {:#02X}", frame.message.as_hex());
+            if let Some(message) = frame.message_parsed {
+                println!("frame.message_parsed:");
+                println!("---------------------");
+                println!("{}", message.to_string());
+            } else {
+                println!("frame.message_parsed: error");
+            }
+            println!("");
+        }
+        /////////
+
+/*
+        for message in messages.iter() {
             debug!("feed_beast: ");
             debug!("feed_beast: --- NEW START OF FRAME ---");
             debug!("feed_beast: frame = {:#02X}", message.as_hex());
@@ -403,7 +543,7 @@ impl ModesReader {
                             let timestamp = 0;
                             let signal_level = 0;
                             let message: Vec<u8> = Vec::new();
-                            return Ok(BeastMessage {
+                            Ok(BeastMessage {
                                 message_length,
                                 timestamp,
                                 signal_level,
@@ -583,7 +723,6 @@ impl ModesReader {
     //return rv;
 /////////////////////////////////////////////////////////////////////
 
-
         let message_length = 0;
         let timestamp = 0;
         let signal_level = 0;
@@ -594,6 +733,7 @@ impl ModesReader {
             signal_level,
             message,
         })
+*/
     }
 
     pub fn timestamp_check(&mut self, timestamp: u64) -> bool {
@@ -753,6 +893,14 @@ pub struct BeastMessage {
     pub timestamp: u64,
     pub signal_level: u8,
     pub message: Vec<u8>,
+    pub message_parsed: Option<adsb_deku::Frame>,
+}
+
+impl BeastMessage {
+    fn to_string(&self) -> String {
+        // FIXME: add message, message_parsed
+        format!("Timestamp: {},\n Signal: {}", self.timestamp, self.signal_level)
+    }
 }
 
 // Decoder reads a Beast stream and stores individual frames.
@@ -784,75 +932,11 @@ impl Message {
     }
 }
 
-/// Reads a byte from the reader, handling the escape sequence for BEAST_ESCAPE.
-///
-/// # Arguments
-///
-/// * `reader` - A reader that implements the `Read` trait.
-///
-/// # Returns
-///
-/// This function returns a `Result` containing the read byte, or an `io::Error` if an error occurs.
-fn read_byte<R: Read>(reader: &mut R) -> io::Result<u8> {
-    let mut buffer = [0; 1];
-    reader.read_exact(&mut buffer)?;
-
-    if buffer[0] == BEAST_ESCAPE {
-        // Check if it's an escape sequence
-        let mut temp_buffer = [0; 1];
-        if reader.read_exact(&mut temp_buffer).is_ok() && temp_buffer[0] == BEAST_ESCAPE {
-            trace!("read_byte: is escape sequence. returning byte {}", BEAST_ESCAPE);
-            Ok(BEAST_ESCAPE) // It's an escape sequence, return the true BEAST_ESCAPE value
-        } else {
-            trace!("read_byte: is NOT escape sequence. returning byte {:#02X}", buffer[0]);
-            Ok(buffer[0]) // Not an escape sequence, return the original BEAST_ESCAPE 
-        }
-    } else {
-        Ok(buffer[0]) // Return the read byte
-    }
-}
-
-/// Reads a specified number of bytes from the reader, handling the optional escape sequence for BEAST_ESCAPE.
-///
-/// # Arguments
-///
-/// * `reader` - A reader that implements the `Read` trait.
-/// * `length` - The number of bytes to read.
-///
-/// # Returns
-///
-/// This function returns a `Result` containing a vector of bytes if successful,
-/// or an `io::Error` if an error occurs during reading.
-fn read_bytes<R: Read>(reader: &mut R, length: usize) -> io::Result<Vec<u8>> {
-    let mut result: Vec<u8> = Vec::with_capacity(length);
-
-    for _ in 0..length {
-        let mut buffer = [0; 1];
-        reader.read_exact(&mut buffer)?;
-
-        if buffer[0] == BEAST_ESCAPE {
-            let mut temp_buffer = [0; 1];
-            if reader.read_exact(&mut temp_buffer).is_ok() && temp_buffer[0] == BEAST_ESCAPE {
-                trace!("read_bytes: is escape sequence. returning byte {}", BEAST_ESCAPE);
-                result.push(BEAST_ESCAPE); // It's an escape sequence, add the true 0x1a value to the result
-            } else {
-                trace!("read_bytes: is NOT escape sequence. return bytes {:#02X} {:#02X}", buffer[0], temp_buffer[0]);
-                result.push(buffer[0]); // Not an escape sequence, add the byte to the result
-                result.push(temp_buffer[0]);
-            }
-        } else {
-            result.push(buffer[0]); // Not BEAST_ESCAPE, add the byte to the result
-        }
-    }
-
-    Ok(result)
-}
-
-/// Handles a single TCP connection
-///
-/// # Arguments
-///
-/// * `stream` - The TCP stream to read data from
+// Handles a single TCP connection
+//
+// # Arguments
+// * `stream` - The TCP stream to read data from
+/*
 fn handle_connection(stream: &mut TcpStream) -> io::Result<()> {
     // Wrap the stream in a BufReader, so we can use the BufRead methods
     //let mut reader = BufReader::with_capacity(10000, stream);
@@ -891,36 +975,7 @@ fn handle_connection(stream: &mut TcpStream) -> io::Result<()> {
 
     Ok(())
 }
-
-fn find_frame_starts(data: &[u8]) -> Vec<(usize, usize)> {
-    trace!("find_frame_starts: data.len() = {}", data.len());
-    let mut frames = Vec::new();
-    let mut i = 0;
-
-    while i < data.len() {
-        trace!("find_frame_start: data[i] = {:#02X}", data[i]);
-        if i + 2 < data.len() && data[i] != BEAST_ESCAPE && data[i + 1] == BEAST_ESCAPE && (data[i + 2] == 0x31 || data[i + 2] == 0x32 || data[i + 2] == 0x33) {
-            trace!("find_frame_starts: i         = {}",      i);
-            trace!("find_frame_starts: data[i]   = {:#02X}", data[i]); 
-            trace!("find_frame_starts: data[i+1] = {:#02X}", data[i+1]); 
-            trace!("find_frame_starts: data[i+2] = {:#02X}", data[i+2]); 
-            let start_index = i + 1; // advance to start of frame marked by BEAST_ESCAPE
-            let mut end_index = i + 2;
-            while end_index + 2 < data.len() && !(data[end_index] == BEAST_ESCAPE && (data[end_index + 1] == 0x31 || data[end_index + 1] == 0x32 || data[end_index + 1] == 0x33)) {
-                end_index += 1;
-            }
-            if end_index < data.len() {
-                frames.push((start_index, end_index));
-                i = end_index;
-            } else {
-                break;
-            }
-        } else {
-            i += 1;
-        }
-    }
-    frames
-}
+*/
 
 /*
 fn main() {
