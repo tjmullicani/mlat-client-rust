@@ -118,9 +118,8 @@ async fn receive_data_tcp(tx: Sender<Vec<BeastMessage>>) {
             break;
         }
 
-        reader.consume(received.len());
-
         let frames = m.feed_beast(received.clone());
+        println!("frames: {:?}", frames);
         // Assuming `frames` is defined as a tuple (HashSet<ModesMessage>, bool)
         //let frames: (HashSet<modes_message::ModesMessage>, bool) = (HashSet::new(), true);
 
@@ -130,6 +129,19 @@ async fn receive_data_tcp(tx: Sender<Vec<BeastMessage>>) {
         for frame in frame_set {
             println!("new frame");
             println!("---------");
+            println!("frame.timestamp: {}", frame.timestamp);
+            println!("frame.signal: {}", frame.signal);
+            println!("frame.nuc: {}", frame.nuc);
+            println!("frame.even_cpr: {}", frame.even_cpr);
+            println!("frame.odd_cpr: {}", frame.odd_cpr);
+            println!("frame.valid: {}", frame.valid);
+            println!("frame.crc: {}", frame.crc);
+            println!("frame.address: {}", frame.address);
+            println!("frame.altitude: {}", frame.altitude);
+            println!("frame.data: {:#02X}", frame.data.as_hex());
+            println!("frame.datalen: {}", frame.datalen);
+            println!("frame.eventdata: {:?}", frame.eventdata);
+            //////////////////////////
             // println!("frame.message_type: {:#02X}", frame.message_type);
             // println!("frame.message_length: {}", frame.message_length);
             // println!("frame.timestamp: {}", frame.timestamp);
@@ -151,6 +163,8 @@ async fn receive_data_tcp(tx: Sender<Vec<BeastMessage>>) {
         //     println!("receiver dropped");
         //     return;
         // }
+
+        reader.consume(received.len());
     }
 }
 

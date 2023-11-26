@@ -343,11 +343,11 @@ impl ModesReader {
             let mut has_timestamp_signal: bool = true;
             let msgtype = mm[0];
 
-            println!("mm frame is {:#02X}", mm.as_hex());
+            debug!("feed_beast: mm frame is {:#02X}", mm.as_hex());
             let ms: Vec<u8> = match msgtype {
                 MESSAGE_TYPE_AC => {
                     if mm.len() != 10 {
-                        warn!("invalid message: expected 11 bytes, received {}", mm.len() + 1);
+                        warn!("feed_beast: invalid message: expected 11 bytes, received {}", mm.len() + 1);
                         error_pending = true;
                         continue;
                     }
@@ -355,7 +355,7 @@ impl ModesReader {
                 },
                 MESSAGE_TYPE_MODE_S => {
                     if mm.len() != 15 {
-                        warn!("invalid message: expected 16 bytes, received {}", mm.len() + 1);
+                        warn!("feed_beast: invalid message: expected 16 bytes, received {}", mm.len() + 1);
                         error_pending = true;
                         continue;
                     }
@@ -363,7 +363,7 @@ impl ModesReader {
                 },
                 MESSAGE_TYPE_MODE_L => {
                     if mm.len() != 22 {
-                        warn!("invalid message: expected 23 bytes, received {}", mm.len() + 1);
+                        warn!("feed_beast: invalid message: expected 23 bytes, received {}", mm.len() + 1);
                         error_pending = true;
                         continue;
                     }
@@ -372,7 +372,7 @@ impl ModesReader {
                 // FIXME: untested
                 MESSAGE_TYPE_RADARCAPE => {
                     if mm.len() != 22 {
-                        warn!("invalid message: expected 23 bytes, received {}", mm.len() + 1);
+                        warn!("feed_beast: invalid message: expected 23 bytes, received {}", mm.len() + 1);
                         error_pending = true;
                         continue;
                     }
@@ -388,19 +388,19 @@ impl ModesReader {
                     mm[8..22].to_vec()
                 },
                 _ => {
-                    debug!("Lost sync with input stream: unexpected message type {:#02X} after {}", msgtype, BEAST_ESCAPE);
+                    debug!("feed_beast: Lost sync with input stream: unexpected message type {:#02X} after {}", msgtype, BEAST_ESCAPE);
                     error_pending = true;
                     continue;
                 },
             };
 
             if ms == [0x00, 0x00] {
-                debug!("Empty byte Mode-AC message, skipping");
+                debug!("Efeed_beast: mpty byte Mode-AC message, skipping");
                 continue;
             }
 
-            info!("mm = {:#02X}", mm.as_hex());
-            info!("ms = {:#02X}", ms.as_hex());
+            debug!("feed_beast: mm = {:#02X}", mm.as_hex());
+            debug!("feed_beast: ms = {:#02X}", ms.as_hex());
             let mut timestamp: u64;
             let mut signal: u8;
             if has_timestamp_signal {
@@ -572,16 +572,18 @@ impl ModesReader {
             // apply filters, update seen-set
             self.received_messages += 1;
             let wanted = self.filter_message(message.clone());
-            if wanted < 0 {
-                break;
-            } else if wanted > 0 {
-                messages.insert(message.clone());
-                message_count += 1;
-            } else {
-                self.suppressed_messages += 1;
-            }
+            // if wanted < 0 {
+            //     break;
+            // } else if wanted > 0 {
+            //     messages.insert(message.clone());
+            //     message_count += 1;
+            // } else {
+            //     self.suppressed_messages += 1;
+            // }
+            // FIXME: use above code
+            messages.insert(message.clone());
         }
-    
+
         let rv = (messages, error_pending);
 
         rv

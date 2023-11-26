@@ -195,7 +195,7 @@ pub struct ModesMessage {
     pub data: Vec<u8>,                         // The payload data
     pub datalen: usize,                        // Length of the payload data
 
-    eventdata: BTreeMap<String, EventData>,     // event data dictionary for special event messages
+    pub eventdata: BTreeMap<String, EventData>,  // event data dictionary for special event messages
 }
 
 impl ModesMessage {
