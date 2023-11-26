@@ -29,6 +29,8 @@ use std::collections::HashMap;
 use hex_slice::AsHex;
 
 use crate::modes::modes_crc;
+use crate::modes::modes::{self, *};
+use crate::modes::modes_reader::{self, *};
 
 /// Decodes altitude information from a compact binary format (AC13 format).
 ///
@@ -139,13 +141,265 @@ pub fn crc_residual(message: &[u8], len: usize) -> u32 {
     crc
 }*/
 
-/// Returns the event name associated with a given DF event code.
-pub fn df_event_name(df: u32) -> Option<&'static str> {
+// Returns the event name associated with a given DF event code.
+pub fn df_event_name(df: u32) -> Option<String> {
     match df {
-        DF_EVENT_TIMESTAMP_JUMP => Some("DF_EVENT_TIMESTAMP_JUMP"),
-        DF_EVENT_MODE_CHANGE => Some("DF_EVENT_MODE_CHANGE"),
-        DF_EVENT_EPOCH_ROLLOVER => Some("DF_EVENT_EPOCH_ROLLOVER"),
-        DF_EVENT_RADARCAPE_STATUS => Some("DF_EVENT_RADARCAPE_STATUS"),
+        DF_EVENT_TIMESTAMP_JUMP => Some("DF_EVENT_TIMESTAMP_JUMP".to_string()),
+        DF_EVENT_MODE_CHANGE => Some("DF_EVENT_MODE_CHANGE".to_string()),
+        DF_EVENT_EPOCH_ROLLOVER => Some("DF_EVENT_EPOCH_ROLLOVER".to_string()),
+        DF_EVENT_RADARCAPE_STATUS => Some("DF_EVENT_RADARCAPE_STATUS".to_string()),
         _ => None,
+    }
+}
+
+// internal entry point to build a new message from a buffer
+pub fn modesmessage_from_buffer(timestamp: u64, signal: u32, data: &u8, datalen: i32) -> Self {
+    let copydata = data;
+
+    let mut message = ModesMessage::default();
+    message.timestamp = timestamp;
+    message.signal = signal;
+    message.data = copydata;
+
+    message
+}
+
+// internal entry point to build a new event message
+// steals a reference from eventdata
+pub fn modesmessage_new_eventmessage(msgtype: u32, timestamp: u64, eventdata: HashMap<String, EventData>) -> ModesMessage {
+    let mut message: ModesMessage = ModesMessage::default();
+
+    message.msgtype = msgtype;
+    message.df = msgtype;
+    message.timestamp = timestamp;
+    message.eventdata = eventdata;
+    
+    message
+}
+
+// A structure representing a modes message.
+#[derive(Debug)]
+pub struct ModesMessage {
+    pub timestamp: u64,                     // 12MHz timestamp
+    pub signal: u32,                        // signal level
+
+    pub df: u32,                            // downlink format or a special DF_* value
+    pub nuc: u32,                           // Navigation uncertainty category; NUCp value
+
+    pub even_cpr: bool,                     // CPR even-format flag
+    pub odd_cpr: bool,                      // CPR odd-format flag
+    pub valid: bool,                        // Does the message look OK?
+    pub crc: Option<u32>,                   // Cyclic redundancy check value
+    pub address: Option<i32>,               // ICAO address
+    pub altitude: Option<i32>,              // altitude information
+
+    pub data: Option<Vec<u8>>,              // The payload data
+    pub datalen: usize,                     // Length of the payload data
+
+    eventdata: HashMap<String, String>,     // event data dictionary for special event messages
+}
+
+impl ModesMessage {
+    fn new(
+        timestamp: u64,
+        signal: u32,
+        df: u32,
+        nuc: u32,
+        even_cpr: bool,
+        odd_cpr: bool,
+        valid: bool,
+        crc: Option<u32>,
+        address: Option<i32>,
+        altitude: Option<i32>,
+        data: Option<Vec<u8>>,
+        datalen: usize,
+        eventdata: Option<HashMap<String, String>>,
+    ) -> Self {
+        ModesMessage { 
+            timestamp,
+            signal,   
+            df, 
+            nuc,
+            even_cpr,
+            odd_cpr,
+            valid,
+            crc,
+            address,
+            altitude,
+            data,
+            datalen,
+            eventdata,
+        }
+    }
+
+    fn default() -> Self {
+        // minimal init
+        ModesMessage {
+            timestamp: 0,
+            signal: 0,
+            df: 0,
+            nuc: 0,
+            even_cpr: 0,
+            odd_cpr: 0,
+            valid: 0,
+            crc: None,
+            address: None,
+            altitude: None,
+            data: None,
+            datalen: 0,
+            eventdata: None,
+        }
+    }
+
+    // Function to build a new message from a buffer.
+    pub fn from_buffer(timestamp: u64, signal: u32, data: &[u8]) -> Result<Self, &'static str> {
+        let datalen = data.len();
+        let copydata = data.to_vec();
+
+        // Assuming `decode` is a function that modifies the message in some way.
+        // This function needs to be implemented.
+        // if decode(&mut message) < 0 {
+        //     return Err("Failed to decode message");
+        // }
+
+        Ok(ModesMessage::default())
+    }
+
+    // Function to build a new event message.
+    pub fn new_event_message(
+        event_type: u32,
+        timestamp: u64,
+        eventdata: HashMap<String, String>,
+    ) -> Self {
+        ModesMessage::default()
+    }
+
+    // Retrieve an item
+    fn get_data_item(&self, key: &str) -> Option<&String> {
+        self.eventdata.get(key)
+    }
+
+    fn decode(&mut self) -> i32 {
+        let mut crc: u32;
+
+        // clear state
+        self.valid = false;
+        self.nuc = 0;
+        self.odd_cpr = false;
+        self.even_cpr = false;
+        self.crc = 0;
+        self.address = 0;
+        self.altitude = 0;
+
+        if self.datalen == 2 {
+            self.df = DF_MODEAC;
+            self.address = ((self.data[0] as i32) << 8) | self.data[1] as i32;
+            self.valid = true;
+            return 0;
+        }
+        self.df = ((self.data[0] >> 3) & 31) as u32;
+        if (self.df < 16 && self.datalen != 7) || (self.df >= 16 && self.datalen != 14) {
+            // wrong length, no further processing
+            return 0;
+        }
+        if self.df != 0 && self.df != 4 && self.df != 5 && self.df != 11 &&
+            self.df != 16 && self.df != 17 && self.df != 18 && self.df != 20 && self.df != 21 {
+            // we do not know how to handle this message type, no further processing
+            return 0;
+        }
+        //crc = crc_residual(&self.data, self.datalen); //TODO: fixme
+        //self.crc = crc;
+        match self.df {
+            0 | 4 | 16 | 20 => {
+                self.address = self.crc as i32;
+                self.altitude = decode_ac13(((self.data[2] & 0x1f) as u32) << 8 | (self.data[3] as u32)).unwrap() as i32;
+                self.valid = true;
+            },
+            5 | 21 | 24 => {
+                self.address = self.crc as i32;
+                self.valid = true;
+            },
+            11 => {
+                self.valid = (self.crc & !0x7f) == 0;
+                if self.valid {
+                    self.address = ((self.data[1] as u32) << 16 | (self.data[2] as u32) << 8 | self.data[3] as u32) as i32;
+                }
+            },
+            17 | 18 => {
+                self.valid = false;
+                self.crc = 0;
+                if self.valid {
+                    let mut metype: u8;
+                    self.address = ((self.data[1] as u32) << 16 | (self.data[2] as u32) << 8 | self.data[3] as u32) as i32;
+                    metype = self.data[4] >> 3;
+                    if (metype >= 9 && metype <= 18) || (metype >= 20 && metype < 22) {
+                        if metype == 22 {
+                            self.nuc = 0;
+                        } else if metype <= 18 {
+                            self.nuc = 18 - metype as u32;
+                        } else {
+                            self.nuc = 29 - metype as u32;
+                        }
+                        if self.data[6] & 0x04 != 0 {
+                            self.odd_cpr = true;
+                        } else {
+                            self.even_cpr = true;
+                        }
+                        self.altitude = decode_ac12(((self.data[5] << 4) | ((self.data[6] & 0xF0) >> 4)) as u32).unwrap() as i32;
+                    }
+                }
+            },
+            _ => {},
+        }
+        return 0;
+    }
+
+    /// Returns the length of the data in the message.
+    fn len(&self) -> usize {
+        self.datalen
+    }
+
+    /// Calculates a hash for the message using a simple hashing algorithm.
+    fn hash(&self) -> u32 {
+        let mut hash: u32 = 0;
+
+        // Jenkins one-at-a-time hash
+        for i in 0..4.min(self.datalen as usize) {
+            hash += self.data[i] as u32;
+            hash = hash.wrapping_add(hash << 10);
+            hash ^= hash >> 6;
+        }
+
+        hash = hash.wrapping_add(hash << 3);
+        hash ^= hash >> 11;
+        hash = hash.wrapping_add(hash << 15);
+
+        hash as u32
+    }
+
+    /// Compares two `ModesMessage` instances.
+    fn compare(&self, other: &Self) -> Ordering {
+        if self.datalen != other.datalen {
+            return self.datalen.cmp(&other.datalen);
+        }
+        self.data.as_slice().cmp(&other.data.as_slice())
+    }
+}
+
+impl fmt::Display for ModesMessage {
+    /// Formats the `ModesMessage` for display.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.data.is_empty() {
+            let hex_data: String = self.data.iter()
+                .map(|byte| format!("{:02x}", byte))
+                .collect();
+            write!(f, "{}", hex_data)
+        } else {
+            if let Some(event_name) = df_event_name(self.df) {
+                write!(f, "{}@{}:{:?}", event_name, self.timestamp, self.eventdata)
+            } else {
+                write!(f, "DF{}@{}:{:?}", self.df, self.timestamp, self.eventdata)
+            }
+        }
     }
 }

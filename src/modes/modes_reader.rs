@@ -34,6 +34,8 @@ use adsb_deku::Frame;
 
 // use crate::modes::modes::*;
 // use crate::modes::modes_crc::*;
+use crate::modes::modes_message::{self, *};
+use crate::modes::modes::{self, *};
 
 /* decoder modes */
 #[derive(Eq, PartialEq, Clone, Debug)]
@@ -62,30 +64,31 @@ pub const SYNTHETIC_TIMESTAMP_END: u64 = SYNTHETIC_TIMESTAMP_START + 10;
 /* a ModesReader object */
 #[derive(Clone, Debug)]
 pub struct ModesReader {
-    /* decoder characteristics */
-    decoder_mode: DecoderMode,
-    decoder_mode_string: String,
-    frequency: u64,
-    epoch: String,
-    last_timestamp: u64, /* last seen timestamp */
-    radarcape_utc_bugfix: bool,
+    // decoder characteristics
+    decoder_mode: DecoderMode,                      // 
+    decoder_mode_string: String,                    // 
+    frequency: u64,                                 // timestamp frequency
+    epoch: String,                                  // timestamp epoch
 
-    /* configurable bits */
-    allow_mode_change: bool,
-    want_zero_timestamps: bool,
-    want_mlat_messages: bool,
-    want_invalid_messages: bool,
-    want_events: bool,
-    
-    /* filtering */
-    seen: HashSet<i32>,
-    default_filter: Option<[i32; 32]>,
-    specific_filter: Vec<Option<bool>>,
-    modeac_filter: HashMap<String, String>,
+    last_timestamp: u64,                            // last seen timestamp
+    radarcape_utc_bugfix: bool,                     // 
 
-    /* stats */
-    received_messages: u32,
-    suppressed_messages: u32,
+    // configurable bits
+    allow_mode_change: bool,                        // can the decoder change mode based on status messages it receives?
+    want_zero_timestamps: bool,                     // should the decoder return messages with zero timestamps?
+    want_synthetic_messages: bool,                  // should the decoder return synthetic messages?
+    want_invalid_messages: bool,                    // should the decoder return invalid messages?
+    want_events: bool,                              // should the decoder return metadata events?
+
+    // filtering
+    seen: Vec<i32>,                           // set of addresses seen by the decoder
+    default_filter: Vec<bool>,                // DF accept filter for all aircraft
+    specific_filter: Vec<Option<HashSet<i32>>>, // DF accept filter for specific aircraft
+    modeac_filter: Vec<i32>,                  // Mode A/C accept filter
+
+    // stats
+    received_messages: u32,                         // total number of messages decoded
+    suppressed_messages: u32,                       // number of messages suppressed by filtering
 }
 
 // Constructs a new `ModesReader`.
@@ -94,20 +97,20 @@ impl Default for ModesReader {
         ModesReader {
             /* minimal init */
             decoder_mode: DecoderMode::None,
-            decoder_mode_string: String::from(""),
+            decoder_mode_string: "".to_string(),
             frequency: 0,
-            epoch: String::from(""),
+            epoch: "".to_string(),
             last_timestamp: 0,
             radarcape_utc_bugfix: false,
             allow_mode_change: true,
             want_zero_timestamps: false,
-            want_mlat_messages: false,
+            want_synthetic_messages: false,
             want_invalid_messages: false,
             want_events: true,
-            seen: HashSet::new(),
-            default_filter: None,
+            seen: Vec::new(),
+            default_filter: vec![false, 32],
             specific_filter: vec![None; 32],
-            modeac_filter: HashMap::new(),
+            modeac_filter: Vec::new(),
             received_messages: 0,
             suppressed_messages: 0,
         }
@@ -123,13 +126,13 @@ impl ModesReader {
         radarcape_utc_bugfix: bool,
         allow_mode_change: bool,
         want_zero_timestamps: bool,
-        want_mlat_messages: bool,
+        want_synthetic_messages: bool,
         want_invalid_messages: bool,
         want_events: bool,
-        seen: HashSet<i32>,
-        default_filter: Option<[i32; 32]>,
-        specific_filter: Vec<Option<bool>>,
-        modeac_filter: HashMap<String, String>,
+        seen: ArrayList<i32>,
+        default_filter: ArrayList<bool>,
+        specific_filter:  ArrayList<Option<HashSet<i32>>>,
+        modeac_filter: ArrayList<i32>,
         received_messages: u32,
         suppressed_messages: u32,
     ) -> Self {
@@ -142,7 +145,7 @@ impl ModesReader {
             radarcape_utc_bugfix,
             allow_mode_change,
             want_zero_timestamps,
-            want_mlat_messages,
+            want_synthetic_messages,
             want_invalid_messages,
             want_events,
             seen,
@@ -223,6 +226,35 @@ impl ModesReader {
         rv
     }*/
 
+    // update self->last_timestamp given that we just saw this timestamp
+    pub fn timestamp_update(&mut self, timestamp: u64)
+    {
+        if self.is_synthetic_or_zero_timestamp(timestamp) {
+            /* special timestamps, don't use them */
+            return;
+        }
+
+        if self.last_timestamp == 0 || self.frequency == 0 {
+            /* startup cases, just accept whatever */
+            self.last_timestamp = timestamp;
+            return;
+        }
+
+        if self.last_timestamp > timestamp && (self.last_timestamp - timestamp) < 90 * self.frequency {
+            /* ignore small moves backwards */
+            return;
+        }
+
+        if (self.decoder_mode == DecoderMode::Radarcape || self.decoder_mode == DecoderMode::RadarcapeEmulated) &&
+            timestamp >= (86340 * 1_000_000_000u64) && self.last_timestamp <= (60 * 1_000_000_000u64) {
+            // In radarcape mode, don't allow last_timestamp to roll back to the previous day
+            // as we will have already issued an epoch reset
+            return;
+        }
+
+        self.last_timestamp = timestamp;
+    }
+
     /// Parses a Beast binary message from a reader.
     ///
     /// # Arguments
@@ -241,10 +273,7 @@ impl ModesReader {
         let mut signal: u8 = 0;
         let mut m_type: u8 = 0;
         let mut message_tuple: () = ();
-        let mut message_count: i32 = 0;
-        let buffer_start: u8 = 0;
-        let p: u8 = 0;
-        let eod: u8 = 0;
+        let mut message_count: u32 = 0;
         let error_pending: bool = false;
 
         /////////
@@ -315,6 +344,7 @@ impl ModesReader {
                 MESSAGE_TYPE_AC => {
                     if mm.len() != 10 {
                         warn!("invalid message: expected 11 bytes, received {}", mm.len() + 1);
+                        error_pending = true;
                         continue;
                     }
                     mm[8..10].to_vec()
@@ -322,6 +352,7 @@ impl ModesReader {
                 MESSAGE_TYPE_MODE_S => {
                     if mm.len() != 15 {
                         warn!("invalid message: expected 16 bytes, received {}", mm.len() + 1);
+                        error_pending = true;
                         continue;
                     }
                     mm[8..15].to_vec()
@@ -329,6 +360,7 @@ impl ModesReader {
                 MESSAGE_TYPE_MODE_L => {
                     if mm.len() != 22 {
                         warn!("invalid message: expected 23 bytes, received {}", mm.len() + 1);
+                        error_pending = true;
                         continue;
                     }
                     mm[8..22].to_vec()
@@ -337,6 +369,7 @@ impl ModesReader {
                 MESSAGE_TYPE_RADARCAPE => {
                     if mm.len() != 22 {
                         warn!("invalid message: expected 23 bytes, received {}", mm.len() + 1);
+                        error_pending = true;
                         continue;
                     }
                     mm[8..22].to_vec()
@@ -352,6 +385,7 @@ impl ModesReader {
                 },
                 _ => {
                     debug!("Lost sync with input stream: unexpected message type {:#02X} after {}", msgtype, BEAST_ESCAPE);
+                    error_pending = true;
                     continue;
                 },
             };
@@ -364,7 +398,7 @@ impl ModesReader {
             info!("mm = {:#02X}", mm.as_hex());
             info!("ms = {:#02X}", ms.as_hex());
             let mut timestamp: u64;
-            let mut signal: u8;
+            let mut signal: u32;
             if has_timestamp_signal {
                 timestamp = u64::from_be_bytes([
                     0, 0, // Pad to 8 bytes
@@ -381,33 +415,175 @@ impl ModesReader {
                 signal = 0;
             }
 
+            if msgtype == MESSAGE_TYPE_RADARCAPE {
+                /* radarcape-style status message, use this to switch our decoder type */
+                self.radarcape_utc_bugfix = (mm[2] & 0x80) == 0x80;
+    
+                if self.allow_mode_change {
+                    let new_mode = if mm[0] & 0x10 != 0 {
+                        // Radarcape in GPS timestamp mode
+                        if (mm[2] & 0x20) == 0x20 {
+                            DecoderMode::RadarcapeEmulated
+                        } else {
+                            DecoderMode::Radarcape
+                        }
+                    } else {
+                        // Radarcape in 12MHz timestamp mode
+                        DecoderMode::Beast
+                    };
+    
+                    // Handle mode changes by inserting an event message
+                    if new_mode != self.decoder_mode {
+                        self.set_decoder_mode(new_mode);
+                        if self.want_events {
+                            // match make_mode_change_event(self) {
+                            //     Some(message) => messages.push(message),
+                            //     None => return Err("Failed to create mode change event"),
+                            // }
+                            // FIXME: define messages (HashSet?)
+                            messages.insert(self.make_mode_change_event());
+                            message_count += 1;
+                        }
+                    }
+
+                    if has_timestamp_signal && !self.is_synthetic_or_zero_timestamp(timestamp) {
+                        if self.decoder_mode == DECODER_BEAST {
+                            /* 12MHz mode */
             
+                            /* check for very out of range value
+                             * (dump1090 can hold messages for up to 60 seconds! so be conservative here)
+                             * also work around dump1090-mutability issue #47 which can send very stale Mode A/C messages
+                             */
+                            if self.want_events && msgtype != MESSAGE_TYPE_AC && !self.timestamp_check(timestamp) {
+                                messages.insert(self.make_timestamp_jump_event(timestamp));
+                                message_count += 1;
+                            }
+            
+                            /* adjust the timestamps so they always reflect the start of the frame */
+                            let adjust: u64 = 0;
+                            if msgtype == MESSAGE_TYPE_AC {
+                                // Mode A/C, timestamp reported at F2 which is 20.3us after F1
+                                // this is 243.6 cycles at 12MHz
+                                adjust = 244;
+                            } else if msgtype == MESSAGE_TYPE_MODE_S {
+                                // Mode S short, timestamp reported at end of frame, frame is 8us preamble plus 56us data
+                                // this is 768 cycles at 12MHz
+                                adjust = 768;
+                            } else if msgtype == MESSAGE_TYPE_MODE_L {
+                                // Mode S long, timestamp reported halfway through the frame (at bit 56), same offset as Mode S short
+                                adjust = 768;
+                            }
+            
+                            // FIXME: could probably optimize
+                            if timestamp < adjust {
+                                timestamp = 0;
+                            } else {
+                                timestamp = timestamp - adjust;
+                            }
+                        } else {
+                            // gps mode 
+            
+                            // adjust timestamp so that it is a contiguous nanoseconds-since-
+                            // midnight value, rather than the raw form which skips values once
+                            // a second
+                            let nanos: u64 = timestamp & 0x00003FFFFFFF;
+                            let secs: u64 = timestamp >> 30;
 
-            let mut frame: BeastMessage = BeastMessage {
-                message_type: msgtype,
-                message_length: ms.len(),
-                timestamp: timestamp,
-                signal_level: signal,
-                message: ms.clone(),
-                message_parsed: None,
-            };
+            
+                            if !self.radarcape_utc_bugfix {
+                                /* fix up the timestamp so it is UTC, not 1 second ahead */
+                                if secs == 0 {
+                                    secs = 86_399;
+                                } else {
+                                    secs -= 1;
+                                }
+                            }
+            
+                            timestamp = nanos + secs * 1_000_000_000;
+            
+                            /* adjust the timestamps so they always reflect the start of the frame */
+                            let adjust: u64 = 0;
+                            if msgtype == MESSAGE_TYPE_AC {
+                                // Mode A/C, timestamp reported at F2 which is 20.3us after F1
+                                adjust = 20_300;
+                            } else if msgtype == MESSAGE_TYPE_MODE_S {
+                                // Mode S short, timestamp reported at end of frame, frame is 8us preamble plus 56us data
+                                adjust = 64_000;
+                            } else if msgtype == MESSAGE_TYPE_MODE_L {
+                                // Mode S long, timestamp reported at end of frame, frame is 8us preamble plus 112us data
+                                adjust = 120_000;
+                            }
 
-            if msgtype == MESSAGE_TYPE_MODE_S || msgtype == MESSAGE_TYPE_MODE_L {
-                match Frame::from_bytes((&ms, 0)) {
-                    Ok((rest, message)) => {
-                        frame.message_parsed = Some(message);
-                        println!("message_parsed = {}", frame.message_parsed.clone().unwrap().to_string());
-                    },
-                    Err(e) => {
-                        warn!("error parsing frame: {}", e);
-                    },
+                            // FIXME: could probably optimize
+                            if adjust <= timestamp {
+                                timestamp = timestamp - adjust;
+                            } else {
+                                // wrap it to the previous day
+                                timestamp = timestamp + 86_400 * 1_000_000_000 - adjust;
+                            }
+
+                            // check for end of day rollover
+                            if self.want_events && self.last_timestamp >= (86_340 * 1_000_000_000) && timestamp <= (60 * 1_000_000_000) {
+                                messages.insert(self.make_epoch_rollover_event(timestamp));
+                                message_count += 1;
+                            } else if self.want_events && msgtype != MESSAGE_TYPE_AC && !self.timestamp_check(timestamp) {
+                                messages.insert(self.make_timestamp_jump_event(timestamp));
+                                message_count += 1;
+                            }
+                        }
+
+                        if msgtype != MESSAGE_TYPE_AC {
+                            self.timestamp_update(timestamp);
+                        }
+                    }
                 }
             }
 
-            frames.push(frame);
-        }
+            if msgtype == MESSAGE_TYPE_RADARCAPE {
+                /* radarcape-style status message, emit the status event if wanted */
+                if (self.want_events) {
+                    messages.insert(self.make_radarcape_status_event(timestamp, data));
+                    message_count += 1;
+                }
 
-        frames
+                // don't try to process this as a Mode S message
+                continue;
+            }
+    
+            if msgtype == MESSAGE_TYPE_RADARCAPE_POS {
+                /* radarcape-style position message, emit the position event if wanted */
+    
+                if self.want_events {
+                    messages.insert(self.make_radarcape_position_event(data));
+                    message_count += 1;
+                }
+    
+                // don't try to process this as a Mode S message
+                continue;
+            }
+
+            /* it's a Mode A/C or Mode S message, parse it */
+           if !(message = modesmessage_from_buffer(timestamp, signal, data, message_len)) {
+                break;
+            }
+
+            /* apply filters, update seen-set */
+            self.received_messages += 1;
+            let wanted = self.filter_message(message);
+            if wanted < 0 {
+                break;
+            } else if wanted > 0 {
+                messages.append(message);
+                message_count += 1;
+            } else {
+                self.suppressed_messages += 1;
+            }
+        }
+    
+        let rv = (messages, error_pending);
+
+        rv
+        //frames
         /////////
 
 /*
@@ -720,6 +896,70 @@ impl ModesReader {
 */
     }
 
+    // inspect a message, update the seen set
+    // return 1 if we should pass this message on to the caller
+    // return 0 if we should drop it
+    // return -1 on internal error (exception has been raised)
+    pub fn filter_message(&mut self, message: ModesMessage) -> i32 {
+        if message.df == DF_MODEAC && self.modeac_filter.contains(&message.address.unwrap()) {
+            return 1;
+        } else {
+            return 0;
+        }
+    
+        if !message.valid {
+            return self.want_invalid_messages as i32; // don't process further, contents are dubious
+        }
+    
+        if message.df == 11 || message.df == 17 || message.df == 18 {
+            // note that we saw this aircraft, even if the message is filtered.
+            // only do this for CRC-checked messages as we get a lot of noise
+            // otherwise.
+            self.seen.add(message.address);
+        }
+
+        if message.timestamp == 0 && !self.want_zero_timestamps {
+            return 0;
+        }
+
+        if self.is_synthetic_timestamp(message.timestamp) && !self.want_synthetic_messages {
+            return 0;
+        }
+
+        // if self.default_filter.is_none() &&self.specific_filter.is_none() {
+        //     // no filters installed, match everything
+        //     return 1;
+        // }
+
+        // check per-type filters
+        // FIXME: test code
+        let mut rv: i8;
+        match filter.get(message.df) {
+            Some(entry) => {
+                if entry { return 1; } else { return 0; }
+            },
+            None => {
+                return -1;
+            },
+        }
+
+        // FIXME: test code
+        match self.specific_filter.get(message.df) {
+            Some(Some(filter)) => {
+                if filter.contains(message.address) {
+                    return entry.get(message.address).unwrap() as i32;
+                } else {
+                    return 0;
+                }
+            },
+            None => {
+                return -1;
+            },
+        }
+
+        0
+    }
+
     pub fn timestamp_check(&mut self, timestamp: u64) -> bool {
         if self.is_synthetic_or_zero_timestamp(timestamp) {
             return true;
@@ -777,6 +1017,12 @@ impl ModesReader {
         return modesmessage_new_eventmessage(DF_EVENT_RADARCAPE_POSITION, 0, eventdata);
     }*/
 
+    pub fn make_radarcape_position_event(&mut self, data: &[u8]) -> ModesMessage {
+        let eventdata = self.radarcape_position_to_dict(data);
+
+        return modesmessage_new_eventmessage(DF_EVENT_RADARCAPE_POSITION, 0, eventdata);
+    }
+
     pub fn is_synthetic_or_zero_timestamp(&mut self, timestamp: u64) -> bool {
         return timestamp == 0 || self.is_synthetic_timestamp(timestamp);
     }
@@ -785,18 +1031,23 @@ impl ModesReader {
         return timestamp >= SYNTHETIC_TIMESTAMP_START && timestamp <= SYNTHETIC_TIMESTAMP_END;
     }
 
-    /*
-    pub fn radarcape_position_to_dict(&mut self, data: &[u8]) -> HashMap<String, f32> {
+    pub fn radarcape_position_to_dict(&mut self, data: &[u8]) -> Option<HashMap<String, f32>> {
         let lat = f32::from_le_bytes(data[4..8].try_into().unwrap());
         let lon = f32::from_le_bytes(data[8..12].try_into().unwrap());
         let alt = f32::from_le_bytes(data[12..16].try_into().unwrap());
+
+        // Check for errors (assuming -1.0 is the error value)
+        if lat == -1.0 || lon == -1.0 || alt == -1.0 {
+            // In Rust, we return None to indicate an error instead of NULL
+            return None;
+        }
 
         let mut map = HashMap::new();
         map.insert("lat".to_string(), lat);
         map.insert("lon".to_string(), lon);
         map.insert("alt".to_string(), alt);
 
-        map
+        Some(map)
     }
 
     /* inspect a message, update the seen set
@@ -804,6 +1055,7 @@ impl ModesReader {
     * return 0 if we should drop it
     * return -1 on internal error (exception has been raised)
     */
+    /*
     pub fn filter_message(&mut self, message: &ModesMessage) -> i32 {
         if message.df == DF_MODEAC {
             if let Some(modeac_filter) = &self.modeac_filter {
@@ -843,9 +1095,37 @@ impl ModesReader {
         }
 
         0
-    }*/
+    }
+    */
 
-    fn make_mode_change_event(&mut self) -> HashMap<&str, EventData> {
+    // create an event message for a timestamp jump
+    pub fn make_timestamp_jump_event(&mut self, timestamp: u64) -> ModesMessage {
+        let mut eventdata = HashMap::new();
+        eventdata.insert("last-timestamp", self.last_timestamp);
+
+        return modesmessage_new_eventmessage(DF_EVENT_TIMESTAMP_JUMP, timestamp, eventdata);
+    }
+
+    // static PyObject *make_mode_change_event(modesreader *self)
+    // {
+    //     PyObject *eventdata = Py_BuildValue("{s:N,s:K,s:s}",
+    //                                         "mode", modesreader_getmode(self, NULL),
+    //                                         "frequency", self->frequency,
+    //                                         "epoch", self->epoch);
+    //     if (eventdata == NULL)
+    //         return NULL;
+    //     return modesmessage_new_eventmessage(DF_EVENT_MODE_CHANGE, 0, eventdata);
+    // }
+
+    // create an event message for an epoch rollover (e.g. GPS end of day)
+    pub fn make_epoch_rollover_event(&mut self, timestamp: u64) -> ModesMessage {
+        let eventdata = HashMap::new();
+
+        return modesmessage_new_eventmessage(DF_EVENT_EPOCH_ROLLOVER, timestamp, eventdata);
+    }
+
+    // create an event message for a decoder mode change. the new mode should already be set.
+    pub fn make_mode_change_event(&mut self) -> HashMap<&str, EventData> {
         let mut eventdata = HashMap::new();
         eventdata.insert("mode", EventData::Mode(self.decoder_mode.clone()));
         eventdata.insert("frequency", EventData::Frequency(self.frequency));
@@ -853,10 +1133,73 @@ impl ModesReader {
 
         eventdata
     }
+
+    // create an event message for a radarcape status report
+    pub fn make_radarcape_status_event(&mut self, timestamp: u64, data: &[u8]) {
+        let mut eventdata = radarcape_status_to_dict(data);
+
+        return modesmessage_new_eventmessage(DF_EVENT_RADARCAPE_STATUS, timestamp, eventdata);
+    }
+}
+
+// turn a radarcape DIP switch setting byte into a Python list of settings strings
+pub fn radarcape_settings_to_list(settings: u8) -> Vec<&'static str> {
+    vec![
+        if settings & 0x01 != 0 { "beast" } else if settings & 0x04 != 0 { "avrmlat" } else { "avr" },
+        if settings & 0x02 != 0 { "filtered_frames" } else { "all_frames" },
+        if settings & 0x08 != 0 { "no_crc" } else { "check_crc" },
+        if settings & 0x10 != 0 { "gps_timestamps" } else { "legacy_timestamps" },
+        if settings & 0x20 != 0 { "rtscts" } else { "no_rtscts" },
+        if settings & 0x40 != 0 { "no_fec" } else { "fec" },
+        if settings & 0x80 != 0 { "modeac" } else { "no_modeac" },
+    ]
+}
+
+// turn a radarcape GPS status byte into a Python dict
+pub fn radarcape_gpsstatus_to_dict(status: u8) -> HashMap<&'static str, bool> {
+    let mut gps_status = HashMap::new();
+
+    if status & 0x80 == 0 {
+        gps_status.insert("utc_bugfix", false);
+        gps_status.insert("timestamp_ok", true);
+    } else {
+        gps_status.insert("utc_bugfix", true);
+        gps_status.insert("timestamp_ok", status & 0x20 == 0);
+        gps_status.insert("sync_ok", status & 0x10 != 0);
+        gps_status.insert("utc_offset_ok", status & 0x08 != 0);
+        gps_status.insert("sats_ok", status & 0x04 != 0);
+        gps_status.insert("tracking_ok", status & 0x02 != 0);
+        gps_status.insert("antenna_ok", status & 0x01 != 0);
+    }
+
+    gps_status
+}
+
+// turn a radarcape 0x34 status message into a Python dict
+pub fn radarcape_status_to_dict(message: &[u8]) -> HashMap<&'static str, StatusValue> {
+    let mut status_dict = HashMap::new();
+
+    // Convert the first byte to a list and add it to the dictionary
+    status_dict.insert("settings", StatusValue::SettingsList(radarcape_settings_to_list(message[0])));
+
+    // Convert the second byte to an i8 and add it to the dictionary
+    let timestamp_pps_delta: i8 = message[1] as i8;
+    status_dict.insert("timestamp_pps_delta", StatusValue::Integer(timestamp_pps_delta as i32));
+
+    // Convert the third byte to a dictionary and add it to the dictionary
+    status_dict.insert("gps_status", StatusValue::GpsStatus(radarcape_gpsstatus_to_dict(message[2])));
+
+    status_dict
+}
+
+pub enum StatusValue {
+    SettingsList(Vec<&'static str>),
+    Integer(i32),
+    GpsStatus(HashMap<&'static str, bool>),
 }
 
 #[derive(Debug)]
-enum EventData {
+pub enum EventData {
     Mode(DecoderMode),
     Frequency(u64),
     Epoch(String),
