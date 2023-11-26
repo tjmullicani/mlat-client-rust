@@ -160,6 +160,7 @@ pub fn modesmessage_from_buffer(timestamp: u64, signal: u8, data: Vec<u8>, datal
     message.timestamp = timestamp;
     message.signal = signal;
     message.data = copydata;
+    message.datalen = datalen;
 
     message
 }
