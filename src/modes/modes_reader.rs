@@ -24,10 +24,11 @@
  */
 
 use std::collections::HashSet;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use hex_slice::AsHex;
 use log::{error, warn, info, debug, trace};
 use std::io::{Read};
+use std::hash::{Hash, Hasher};
 
 use adsb_deku::deku::DekuContainerRead;
 use adsb_deku::Frame;
@@ -38,7 +39,7 @@ use crate::modes::modes_message::{self, *};
 use crate::modes::modes::{self, *};
 
 /* decoder modes */
-#[derive(Eq, PartialEq, Clone, Debug)]
+#[derive(Copy, Eq, PartialEq, Hash, Clone, Debug)]
 pub enum DecoderMode {
     Beast,             /* Beast binary, freerunning 48-bit timestamp @ 12MHz */
     Radarcape,         /* Beast binary, 1GHz Radarcape timestamp, UTC synchronized from GPS */
@@ -108,7 +109,7 @@ impl Default for ModesReader {
             want_invalid_messages: false,
             want_events: true,
             seen: Vec::new(),
-            default_filter: vec![false, 32],
+            default_filter: vec![false; 32],
             specific_filter: vec![None; 32],
             modeac_filter: Vec::new(),
             received_messages: 0,
@@ -129,10 +130,10 @@ impl ModesReader {
         want_synthetic_messages: bool,
         want_invalid_messages: bool,
         want_events: bool,
-        seen: ArrayList<i32>,
-        default_filter: ArrayList<bool>,
-        specific_filter:  ArrayList<Option<HashSet<i32>>>,
-        modeac_filter: ArrayList<i32>,
+        seen: Vec<i32>,
+        default_filter: Vec<bool>,
+        specific_filter:  Vec<Option<HashSet<i32>>>,
+        modeac_filter: Vec<i32>,
         received_messages: u32,
         suppressed_messages: u32,
     ) -> Self {
@@ -267,14 +268,17 @@ impl ModesReader {
     /// or an `io::Error` if an error occurs during reading.
     //fn beast(&mut self, buffer: ???, max_messages: i32) -> ??? {
     //pub fn feed_beast(&mut self) -> (i64, (), bool) {
-    pub fn feed_beast(&mut self, mut buffer: Vec<u8>) -> Vec<BeastMessage> {
+    //pub fn feed_beast(&mut self, mut buffer: Vec<u8>) -> Vec<BeastMessage> {
+    pub fn feed_beast(&mut self, mut buffer: Vec<u8>) -> (HashSet<ModesMessage>, bool) {
         let mut timestamp: u64 = 0;
         let mut timestamp_bytes: [u8; 6] = [0; 6];
         let mut signal: u8 = 0;
         let mut m_type: u8 = 0;
         let mut message_tuple: () = ();
         let mut message_count: u32 = 0;
-        let error_pending: bool = false;
+        let mut error_pending: bool = false;
+
+	    let mut messages: HashSet<ModesMessage> = HashSet::new();
 
         /////////
         let mut messages_mlat: Vec<Vec<u8>> = Vec::new();
@@ -398,7 +402,7 @@ impl ModesReader {
             info!("mm = {:#02X}", mm.as_hex());
             info!("ms = {:#02X}", ms.as_hex());
             let mut timestamp: u64;
-            let mut signal: u32;
+            let mut signal: u8;
             if has_timestamp_signal {
                 timestamp = u64::from_be_bytes([
                     0, 0, // Pad to 8 bytes
@@ -447,7 +451,7 @@ impl ModesReader {
                     }
 
                     if has_timestamp_signal && !self.is_synthetic_or_zero_timestamp(timestamp) {
-                        if self.decoder_mode == DECODER_BEAST {
+                        if self.decoder_mode == DecoderMode::Beast {
                             /* 12MHz mode */
             
                             /* check for very out of range value
@@ -458,9 +462,9 @@ impl ModesReader {
                                 messages.insert(self.make_timestamp_jump_event(timestamp));
                                 message_count += 1;
                             }
-            
+
                             /* adjust the timestamps so they always reflect the start of the frame */
-                            let adjust: u64 = 0;
+                            let mut adjust: u64 = 0;
                             if msgtype == MESSAGE_TYPE_AC {
                                 // Mode A/C, timestamp reported at F2 which is 20.3us after F1
                                 // this is 243.6 cycles at 12MHz
@@ -487,7 +491,7 @@ impl ModesReader {
                             // midnight value, rather than the raw form which skips values once
                             // a second
                             let nanos: u64 = timestamp & 0x00003FFFFFFF;
-                            let secs: u64 = timestamp >> 30;
+                            let mut secs: u64 = timestamp >> 30;
 
             
                             if !self.radarcape_utc_bugfix {
@@ -500,9 +504,9 @@ impl ModesReader {
                             }
             
                             timestamp = nanos + secs * 1_000_000_000;
-            
+
                             /* adjust the timestamps so they always reflect the start of the frame */
-                            let adjust: u64 = 0;
+                            let mut adjust: u64 = 0;
                             if msgtype == MESSAGE_TYPE_AC {
                                 // Mode A/C, timestamp reported at F2 which is 20.3us after F1
                                 adjust = 20_300;
@@ -542,7 +546,7 @@ impl ModesReader {
             if msgtype == MESSAGE_TYPE_RADARCAPE {
                 /* radarcape-style status message, emit the status event if wanted */
                 if (self.want_events) {
-                    messages.insert(self.make_radarcape_status_event(timestamp, data));
+                    messages.insert(self.make_radarcape_status_event(timestamp, ms));
                     message_count += 1;
                 }
 
@@ -554,7 +558,7 @@ impl ModesReader {
                 /* radarcape-style position message, emit the position event if wanted */
     
                 if self.want_events {
-                    messages.insert(self.make_radarcape_position_event(data));
+                    messages.insert(self.make_radarcape_position_event(ms));
                     message_count += 1;
                 }
     
@@ -562,18 +566,16 @@ impl ModesReader {
                 continue;
             }
 
-            /* it's a Mode A/C or Mode S message, parse it */
-           if !(message = modesmessage_from_buffer(timestamp, signal, data, message_len)) {
-                break;
-            }
+            // it's a Mode A/C or Mode S message, parse it
+            let message = modesmessage_from_buffer(timestamp, signal, ms.clone(), ms.len());
 
-            /* apply filters, update seen-set */
+            // apply filters, update seen-set
             self.received_messages += 1;
-            let wanted = self.filter_message(message);
+            let wanted = self.filter_message(message.clone());
             if wanted < 0 {
                 break;
             } else if wanted > 0 {
-                messages.append(message);
+                messages.insert(message.clone());
                 message_count += 1;
             } else {
                 self.suppressed_messages += 1;
@@ -901,7 +903,7 @@ impl ModesReader {
     // return 0 if we should drop it
     // return -1 on internal error (exception has been raised)
     pub fn filter_message(&mut self, message: ModesMessage) -> i32 {
-        if message.df == DF_MODEAC && self.modeac_filter.contains(&message.address.unwrap()) {
+        if message.df == DF_MODEAC && self.modeac_filter.contains(&message.address) {
             return 1;
         } else {
             return 0;
@@ -915,7 +917,7 @@ impl ModesReader {
             // note that we saw this aircraft, even if the message is filtered.
             // only do this for CRC-checked messages as we get a lot of noise
             // otherwise.
-            self.seen.add(message.address);
+            self.seen.push(message.address);
         }
 
         if message.timestamp == 0 && !self.want_zero_timestamps {
@@ -934,9 +936,9 @@ impl ModesReader {
         // check per-type filters
         // FIXME: test code
         let mut rv: i8;
-        match filter.get(message.df) {
+        match self.default_filter.get(message.df as usize) {
             Some(entry) => {
-                if entry { return 1; } else { return 0; }
+                if *entry { return 1; } else { return 0; }
             },
             None => {
                 return -1;
@@ -944,17 +946,20 @@ impl ModesReader {
         }
 
         // FIXME: test code
-        match self.specific_filter.get(message.df) {
-            Some(Some(filter)) => {
-                if filter.contains(message.address) {
-                    return entry.get(message.address).unwrap() as i32;
+        match self.specific_filter.get(message.df as usize) {
+            Some(Some(entry)) => {
+                if entry.contains(&message.address) {
+                    return *entry.get(&message.address).unwrap();
                 } else {
                     return 0;
                 }
             },
-            None => {
+            Some(None) => {
                 return -1;
             },
+            None => {
+                return -1;
+            }
         }
 
         0
@@ -1017,8 +1022,8 @@ impl ModesReader {
         return modesmessage_new_eventmessage(DF_EVENT_RADARCAPE_POSITION, 0, eventdata);
     }*/
 
-    pub fn make_radarcape_position_event(&mut self, data: &[u8]) -> ModesMessage {
-        let eventdata = self.radarcape_position_to_dict(data);
+    pub fn make_radarcape_position_event(&mut self, data: Vec<u8>) -> ModesMessage {
+        let eventdata = self.radarcape_position_to_dict(data).unwrap();
 
         return modesmessage_new_eventmessage(DF_EVENT_RADARCAPE_POSITION, 0, eventdata);
     }
@@ -1031,7 +1036,7 @@ impl ModesReader {
         return timestamp >= SYNTHETIC_TIMESTAMP_START && timestamp <= SYNTHETIC_TIMESTAMP_END;
     }
 
-    pub fn radarcape_position_to_dict(&mut self, data: &[u8]) -> Option<HashMap<String, f32>> {
+    pub fn radarcape_position_to_dict(&mut self, data: Vec<u8>) -> Option<BTreeMap<String, EventData>> {
         let lat = f32::from_le_bytes(data[4..8].try_into().unwrap());
         let lon = f32::from_le_bytes(data[8..12].try_into().unwrap());
         let alt = f32::from_le_bytes(data[12..16].try_into().unwrap());
@@ -1042,10 +1047,10 @@ impl ModesReader {
             return None;
         }
 
-        let mut map = HashMap::new();
-        map.insert("lat".to_string(), lat);
-        map.insert("lon".to_string(), lon);
-        map.insert("alt".to_string(), alt);
+        let mut map = BTreeMap::new();
+        map.insert("lat".to_string(), EventData::Float(lat));
+        map.insert("lon".to_string(), EventData::Float(lon));
+        map.insert("alt".to_string(), EventData::Float(alt));
 
         Some(map)
     }
@@ -1100,8 +1105,8 @@ impl ModesReader {
 
     // create an event message for a timestamp jump
     pub fn make_timestamp_jump_event(&mut self, timestamp: u64) -> ModesMessage {
-        let mut eventdata = HashMap::new();
-        eventdata.insert("last-timestamp", self.last_timestamp);
+        let mut eventdata = BTreeMap::new();
+        eventdata.insert("last-timestamp".to_string(), EventData::Frequency(self.last_timestamp));
 
         return modesmessage_new_eventmessage(DF_EVENT_TIMESTAMP_JUMP, timestamp, eventdata);
     }
@@ -1119,23 +1124,23 @@ impl ModesReader {
 
     // create an event message for an epoch rollover (e.g. GPS end of day)
     pub fn make_epoch_rollover_event(&mut self, timestamp: u64) -> ModesMessage {
-        let eventdata = HashMap::new();
+        let eventdata = BTreeMap::new();
 
         return modesmessage_new_eventmessage(DF_EVENT_EPOCH_ROLLOVER, timestamp, eventdata);
     }
 
     // create an event message for a decoder mode change. the new mode should already be set.
-    pub fn make_mode_change_event(&mut self) -> HashMap<&str, EventData> {
-        let mut eventdata = HashMap::new();
-        eventdata.insert("mode", EventData::Mode(self.decoder_mode.clone()));
-        eventdata.insert("frequency", EventData::Frequency(self.frequency));
-        eventdata.insert("epoch", EventData::Epoch(self.epoch.clone()));
+    pub fn make_mode_change_event(&mut self) -> ModesMessage {
+        let mut eventdata = BTreeMap::new();
+        eventdata.insert("mode".to_string(), EventData::Mode(self.decoder_mode.clone()));
+        eventdata.insert("frequency".to_string(), EventData::Frequency(self.frequency));
+        eventdata.insert("epoch".to_string(), EventData::Epoch(self.epoch.clone()));
 
-        eventdata
+       return modesmessage_new_eventmessage(DF_EVENT_MODE_CHANGE, 0, eventdata);
     }
 
     // create an event message for a radarcape status report
-    pub fn make_radarcape_status_event(&mut self, timestamp: u64, data: &[u8]) {
+    pub fn make_radarcape_status_event(&mut self, timestamp: u64, data: Vec<u8>) -> ModesMessage {
         let mut eventdata = radarcape_status_to_dict(data);
 
         return modesmessage_new_eventmessage(DF_EVENT_RADARCAPE_STATUS, timestamp, eventdata);
@@ -1143,66 +1148,114 @@ impl ModesReader {
 }
 
 // turn a radarcape DIP switch setting byte into a Python list of settings strings
-pub fn radarcape_settings_to_list(settings: u8) -> Vec<&'static str> {
+pub fn radarcape_settings_to_list(settings: u8) -> Vec<String> {
     vec![
-        if settings & 0x01 != 0 { "beast" } else if settings & 0x04 != 0 { "avrmlat" } else { "avr" },
-        if settings & 0x02 != 0 { "filtered_frames" } else { "all_frames" },
-        if settings & 0x08 != 0 { "no_crc" } else { "check_crc" },
-        if settings & 0x10 != 0 { "gps_timestamps" } else { "legacy_timestamps" },
-        if settings & 0x20 != 0 { "rtscts" } else { "no_rtscts" },
-        if settings & 0x40 != 0 { "no_fec" } else { "fec" },
-        if settings & 0x80 != 0 { "modeac" } else { "no_modeac" },
+        if settings & 0x01 != 0 { "beast".to_string() } else if settings & 0x04 != 0 { "avrmlat".to_string() } else { "avr".to_string() },
+        if settings & 0x02 != 0 { "filtered_frames".to_string() } else { "all_frames".to_string() },
+        if settings & 0x08 != 0 { "no_crc".to_string() } else { "check_crc".to_string() },
+        if settings & 0x10 != 0 { "gps_timestamps".to_string() } else { "legacy_timestamps".to_string() },
+        if settings & 0x20 != 0 { "rtscts".to_string() } else { "no_rtscts".to_string() },
+        if settings & 0x40 != 0 { "no_fec".to_string() } else { "fec".to_string() },
+        if settings & 0x80 != 0 { "modeac".to_string() } else { "no_modeac".to_string() },
     ]
 }
 
 // turn a radarcape GPS status byte into a Python dict
-pub fn radarcape_gpsstatus_to_dict(status: u8) -> HashMap<&'static str, bool> {
-    let mut gps_status = HashMap::new();
+pub fn radarcape_gpsstatus_to_dict(status: u8) -> BTreeMap<String, bool> {
+    let mut gps_status = BTreeMap::new();
 
     if status & 0x80 == 0 {
-        gps_status.insert("utc_bugfix", false);
-        gps_status.insert("timestamp_ok", true);
+        gps_status.insert("utc_bugfix".to_string(), false);
+        gps_status.insert("timestamp_ok".to_string(), true);
     } else {
-        gps_status.insert("utc_bugfix", true);
-        gps_status.insert("timestamp_ok", status & 0x20 == 0);
-        gps_status.insert("sync_ok", status & 0x10 != 0);
-        gps_status.insert("utc_offset_ok", status & 0x08 != 0);
-        gps_status.insert("sats_ok", status & 0x04 != 0);
-        gps_status.insert("tracking_ok", status & 0x02 != 0);
-        gps_status.insert("antenna_ok", status & 0x01 != 0);
+        gps_status.insert("utc_bugfix".to_string(), true);
+        gps_status.insert("timestamp_ok".to_string(), status & 0x20 == 0);
+        gps_status.insert("sync_ok".to_string(), status & 0x10 != 0);
+        gps_status.insert("utc_offset_ok".to_string(), status & 0x08 != 0);
+        gps_status.insert("sats_ok".to_string(), status & 0x04 != 0);
+        gps_status.insert("tracking_ok".to_string(), status & 0x02 != 0);
+        gps_status.insert("antenna_ok".to_string(), status & 0x01 != 0);
     }
 
     gps_status
 }
 
 // turn a radarcape 0x34 status message into a Python dict
-pub fn radarcape_status_to_dict(message: &[u8]) -> HashMap<&'static str, StatusValue> {
-    let mut status_dict = HashMap::new();
+pub fn radarcape_status_to_dict(message: Vec<u8>) -> BTreeMap<String, EventData> {
+    let mut status_dict = BTreeMap::new();
 
     // Convert the first byte to a list and add it to the dictionary
-    status_dict.insert("settings", StatusValue::SettingsList(radarcape_settings_to_list(message[0])));
+    status_dict.insert("settings".to_string(), EventData::SettingsList(radarcape_settings_to_list(message[0])));
 
     // Convert the second byte to an i8 and add it to the dictionary
     let timestamp_pps_delta: i8 = message[1] as i8;
-    status_dict.insert("timestamp_pps_delta", StatusValue::Integer(timestamp_pps_delta as i32));
+    status_dict.insert("timestamp_pps_delta".to_string(), EventData::Integer(timestamp_pps_delta as i32));
 
     // Convert the third byte to a dictionary and add it to the dictionary
-    status_dict.insert("gps_status", StatusValue::GpsStatus(radarcape_gpsstatus_to_dict(message[2])));
+    status_dict.insert("gps_status".to_string(), EventData::GpsStatus(radarcape_gpsstatus_to_dict(message[2])));
 
     status_dict
 }
 
-pub enum StatusValue {
-    SettingsList(Vec<&'static str>),
-    Integer(i32),
-    GpsStatus(HashMap<&'static str, bool>),
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum EventData {
     Mode(DecoderMode),
     Frequency(u64),
     Epoch(String),
+    SettingsList(Vec<String>),
+    Integer(i32),
+    Float(f32),
+    GpsStatus(BTreeMap<String, bool>),
+}
+
+impl PartialEq for EventData {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (EventData::Mode(a), EventData::Mode(b)) => a == b,
+            (EventData::Frequency(a), EventData::Frequency(b)) => a == b,
+            (EventData::Epoch(a), EventData::Epoch(b)) => a == b,
+            (EventData::SettingsList(a), EventData::SettingsList(b)) => a == b,
+            (EventData::Integer(a), EventData::Integer(b)) => a == b,
+            (EventData::Float(a), EventData::Float(b)) => (a - b).abs() < std::f32::EPSILON,
+            (EventData::GpsStatus(a), EventData::GpsStatus(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for EventData {}
+
+impl Hash for EventData {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            EventData::Mode(mode) => {
+                state.write_u8(*mode as u8);
+            }
+            EventData::Frequency(freq) => {
+                state.write_u64(*freq);
+            }
+            EventData::Epoch(epoch) => {
+                epoch.hash(state);
+            }
+            EventData::SettingsList(list) => {
+                for item in list {
+                    item.hash(state);
+                }
+            }
+            EventData::Integer(value) => {
+                state.write_i32(*value);
+            }
+            EventData::Float(value) => {
+                state.write_u32(value.to_bits());
+            }
+            EventData::GpsStatus(status) => {
+                for (key, value) in status {
+                    key.hash(state);
+                    value.hash(state);
+                }
+            }
+        }
+    }
 }
 
 /// Represents a Mode-S Beast binary message.

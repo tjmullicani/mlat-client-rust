@@ -25,7 +25,7 @@
 
 use std::cmp::Ordering;
 use std::fmt;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use hex_slice::AsHex;
 
 use crate::modes::modes_crc;
@@ -153,7 +153,7 @@ pub fn df_event_name(df: u32) -> Option<String> {
 }
 
 // internal entry point to build a new message from a buffer
-pub fn modesmessage_from_buffer(timestamp: u64, signal: u32, data: &u8, datalen: i32) -> Self {
+pub fn modesmessage_from_buffer(timestamp: u64, signal: u8, data: Vec<u8>, datalen: usize) -> ModesMessage {
     let copydata = data;
 
     let mut message = ModesMessage::default();
@@ -166,10 +166,9 @@ pub fn modesmessage_from_buffer(timestamp: u64, signal: u32, data: &u8, datalen:
 
 // internal entry point to build a new event message
 // steals a reference from eventdata
-pub fn modesmessage_new_eventmessage(msgtype: u32, timestamp: u64, eventdata: HashMap<String, EventData>) -> ModesMessage {
+pub fn modesmessage_new_eventmessage(msgtype: u32, timestamp: u64, eventdata: BTreeMap<String, EventData>) -> ModesMessage {
     let mut message: ModesMessage = ModesMessage::default();
 
-    message.msgtype = msgtype;
     message.df = msgtype;
     message.timestamp = timestamp;
     message.eventdata = eventdata;
@@ -178,42 +177,42 @@ pub fn modesmessage_new_eventmessage(msgtype: u32, timestamp: u64, eventdata: Ha
 }
 
 // A structure representing a modes message.
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ModesMessage {
-    pub timestamp: u64,                     // 12MHz timestamp
-    pub signal: u32,                        // signal level
+    pub timestamp: u64,                        // 12MHz timestamp
+    pub signal: u8,                            // signal level
 
-    pub df: u32,                            // downlink format or a special DF_* value
-    pub nuc: u32,                           // Navigation uncertainty category; NUCp value
+    pub df: u32,                               // downlink format or a special DF_* value
+    pub nuc: u32,                              // Navigation uncertainty category; NUCp value
 
-    pub even_cpr: bool,                     // CPR even-format flag
-    pub odd_cpr: bool,                      // CPR odd-format flag
-    pub valid: bool,                        // Does the message look OK?
-    pub crc: Option<u32>,                   // Cyclic redundancy check value
-    pub address: Option<i32>,               // ICAO address
-    pub altitude: Option<i32>,              // altitude information
+    pub even_cpr: bool,                        // CPR even-format flag
+    pub odd_cpr: bool,                         // CPR odd-format flag
+    pub valid: bool,                           // Does the message look OK?
+    pub crc: u32,                              // Cyclic redundancy check value
+    pub address: i32,                          // ICAO address
+    pub altitude: i32,                         // altitude information
 
-    pub data: Option<Vec<u8>>,              // The payload data
-    pub datalen: usize,                     // Length of the payload data
+    pub data: Vec<u8>,                         // The payload data
+    pub datalen: usize,                        // Length of the payload data
 
-    eventdata: HashMap<String, String>,     // event data dictionary for special event messages
+    eventdata: BTreeMap<String, EventData>,     // event data dictionary for special event messages
 }
 
 impl ModesMessage {
     fn new(
         timestamp: u64,
-        signal: u32,
+        signal: u8,
         df: u32,
         nuc: u32,
         even_cpr: bool,
         odd_cpr: bool,
         valid: bool,
-        crc: Option<u32>,
-        address: Option<i32>,
-        altitude: Option<i32>,
-        data: Option<Vec<u8>>,
+        crc: u32,
+        address: i32,
+        altitude: i32,
+        data: Vec<u8>,
         datalen: usize,
-        eventdata: Option<HashMap<String, String>>,
+        eventdata: BTreeMap<String, EventData>,
     ) -> Self {
         ModesMessage { 
             timestamp,
@@ -239,22 +238,22 @@ impl ModesMessage {
             signal: 0,
             df: 0,
             nuc: 0,
-            even_cpr: 0,
-            odd_cpr: 0,
-            valid: 0,
-            crc: None,
-            address: None,
-            altitude: None,
-            data: None,
+            even_cpr: false,
+            odd_cpr: false,
+            valid: false,
+            crc: 0,
+            address: 0,
+            altitude: 0,
+            data: Vec::new(),
             datalen: 0,
-            eventdata: None,
+            eventdata: BTreeMap::new(),
         }
     }
 
     // Function to build a new message from a buffer.
-    pub fn from_buffer(timestamp: u64, signal: u32, data: &[u8]) -> Result<Self, &'static str> {
+    pub fn from_buffer(timestamp: u64, signal: u32, data: Vec<u8>) -> Result<Self, &'static str> {
         let datalen = data.len();
-        let copydata = data.to_vec();
+        let copydata = data;
 
         // Assuming `decode` is a function that modifies the message in some way.
         // This function needs to be implemented.
@@ -269,14 +268,9 @@ impl ModesMessage {
     pub fn new_event_message(
         event_type: u32,
         timestamp: u64,
-        eventdata: HashMap<String, String>,
+        eventdata: BTreeMap<String, String>,
     ) -> Self {
         ModesMessage::default()
-    }
-
-    // Retrieve an item
-    fn get_data_item(&self, key: &str) -> Option<&String> {
-        self.eventdata.get(key)
     }
 
     fn decode(&mut self) -> i32 {
