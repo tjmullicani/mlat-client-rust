@@ -338,7 +338,6 @@ impl ModesReader {
         }
 
         // Extract messages
-        let mut frames: Vec<BeastMessage> = Vec::new();
         for mm in messages_mlat {
             let mut has_timestamp_signal: bool = true;
             let msgtype = mm[0];
@@ -1280,24 +1279,6 @@ impl Ord for EventData {
             // Add more cases as needed
             _ => unimplemented!(), // Handle other cases as needed
         }
-    }
-}
-
-/// Represents a Mode-S Beast binary message.
-#[derive(Debug)]
-pub struct BeastMessage {
-    pub message_type: u8,
-    pub message_length: usize,
-    pub timestamp: u64,
-    pub signal_level: u8,
-    pub message: Vec<u8>,
-    //pub message_parsed: Option<adsb_deku::Frame>,
-}
-
-impl BeastMessage {
-    fn to_string(&self) -> String {
-        // FIXME: add message, message_parsed
-        format!("Timestamp: {},\n Signal: {}", self.timestamp, self.signal_level)
     }
 }
 

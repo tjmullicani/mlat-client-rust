@@ -34,6 +34,7 @@ use log::LevelFilter;
 use log::{trace, debug, info, warn, error};
 use env_logger::Builder;
 use std::str::FromStr;
+use std::collections::HashSet;
 
 extern crate log;
 extern crate hex_slice;
@@ -41,7 +42,7 @@ use hex_slice::AsHex;
 
 mod modes;
 use crate::modes::modes_reader::*;
-// use crate::modes::modes_message::*;
+use crate::modes::modes_message::*;
 // use crate::modes::modes::*;
 
 #[derive(Parser, Debug)]
@@ -115,7 +116,7 @@ fn monotonic_time() -> f64 {
     }
 }
 
-async fn receive_data_tcp(tx: Sender<Vec<BeastMessage>>) {
+async fn receive_data_tcp(tx: Sender<HashSet<ModesMessage>>) {
     warn!("receive_data_tcp run");
     let mut stream = TcpStream::connect("127.0.0.1:30005").unwrap();
     //let mut stream = TcpStream::connect("172.16.11.51:30005").unwrap();
@@ -144,9 +145,9 @@ async fn receive_data_tcp(tx: Sender<Vec<BeastMessage>>) {
         //let frames: (HashSet<modes_message::ModesMessage>, bool) = (HashSet::new(), true);
 
         // Destructure the tuple to get the HashSet
-        let (frame_set, _flag) = &frames;
+        let (frame_set, _flag) = frames;
 
-        for frame in frame_set {
+        for frame in &frame_set {
             println!("new frame");
             println!("---------");
             println!("frame.timestamp: {}", frame.timestamp);
@@ -180,10 +181,10 @@ async fn receive_data_tcp(tx: Sender<Vec<BeastMessage>>) {
             println!("");
         }
 
-        // if let Err(_) = tx.send(frames).await {
-        //     println!("receiver dropped");
-        //     return;
-        // }
+        if let Err(_) = tx.send(frame_set.clone()).await {
+            println!("receiver dropped");
+            return;
+        }
 
         reader.consume(received.len());
     }
@@ -218,7 +219,7 @@ async fn main() -> tokio::io::Result<()> {
     // trace!("trace");
 
     //let (tx, mut rx): (Sender<ModesReader>, Receiver<ModesReader>) = mpsc::channel(100);
-    let (tx, mut rx): (Sender<Vec<BeastMessage>>, Receiver<Vec<BeastMessage>>) = mpsc::channel(100);
+    let (tx, mut rx): (Sender<HashSet<ModesMessage>>, Receiver<HashSet<ModesMessage>>) = mpsc::channel(100);
     //std::thread::spawn(|| receive_data_tcp(tx));
     //receive_data_tcp(tx).await;
 
@@ -244,7 +245,7 @@ async fn main() -> tokio::io::Result<()> {
     Ok(())
 }
 
-async fn transmit_data(dest_address: String, mut rx: Receiver<Vec<BeastMessage>>) {
+async fn transmit_data(dest_address: String, mut rx: Receiver<HashSet<ModesMessage>>) {
     warn!("transmit_data run");
     let dest_proto = "udp"; // udp or tcp
     //let dest_address = "127.0.0.1:30004";
@@ -257,12 +258,12 @@ async fn transmit_data(dest_address: String, mut rx: Receiver<Vec<BeastMessage>>
             trace!("transmit_data loop");
             if let Some(frames) = rx.recv().await {
                 for frame in frames {
-                    println!("{:#02X}", frame.message.as_hex());
+                    println!("{:#02X}", frame.data.as_hex());
                     // FIXME: for testing, do not print 0x31 type messages
-                    if frame.message_type != 0x31 {
-                        let len = socket.send(&frame.message).unwrap();
+                    //if frame.message_type != 0x31 {
+                        let len = socket.send(&frame.data).unwrap();
                         println!("Sent {} bytes", len);
-                    }
+                    //}
                 }
             } else {
                 break;
@@ -275,8 +276,8 @@ async fn transmit_data(dest_address: String, mut rx: Receiver<Vec<BeastMessage>>
             warn!("transmit_data loop");
             if let Some(frames) = rx.recv().await {
                 for frame in frames {
-                    println!("{:#02X}", frame.message.as_hex());
-                    let len = socket.write(&frame.message).unwrap();
+                    println!("{:#02X}", frame.data.as_hex());
+                    let len = socket.write(&frame.data).unwrap();
                     println!("Sent {} bytes", len);
                 }
             }
