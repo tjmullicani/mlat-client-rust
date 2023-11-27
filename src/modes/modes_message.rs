@@ -410,7 +410,7 @@ pub fn crc_residual(message: &[u8], len: usize) -> u32 {
         return 0;
     }
 
-    crc = modescrc_buffer_crc(message, Some(len - 3));
+    crc = modescrc_buffer_crc(message, len - 3);
     crc = crc ^ ((message[len-3] as u32) << 16);
     crc = crc ^ ((message[len-2] as u32) << 8);
     crc = crc ^ (message[len-1] as u32);

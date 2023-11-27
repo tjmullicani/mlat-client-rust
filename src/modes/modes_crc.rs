@@ -40,137 +40,45 @@ pub const MODES_GENERATOR_POLY: u32 = 0x1FFF409;
 pub const LONG_MSG_BITS: u8         = 112;
 pub const SHORT_MSG_BITS: u8        = 56;
 
-/* Parity table for MODE S Messages.
- * The table contains 112 elements, every element corresponds to a bit set
- * in the message, starting from the first bit of actual data after the
- * preamble.
- *
- * For messages of 112 bit, the whole table is used.
- * For messages of 56 bits only the last 56 elements are used.
- *
- * The algorithm is as simple as xoring all the elements in this table
- * for which the corresponding bit on the message is set to 1.
- *
- * The latest 24 elements in this table are set to 0 as the checksum at the
- * end of the message should not affect the computation.
- *
- * Note: this function can be used with DF11 and DF17, other modes have
- * the CRC xored with the sender address as they are reply to interrogations,
- * but a casual listener can't split the address from the checksum.
- */
-static PARITY_TABLE: [u32; 112] = [
-    0x3935ea, 0x1c9af5, 0xf1b77e, 0x78dbbf, 0xc397db, 0x9e31e9, 0xb0e2f0, 0x587178,
-    0x2c38bc, 0x161c5e, 0x0b0e2f, 0xfa7d13, 0x82c48d, 0xbe9842, 0x5f4c21, 0xd05c14,
-    0x682e0a, 0x341705, 0xe5f186, 0x72f8c3, 0xc68665, 0x9cb936, 0x4e5c9b, 0xd8d449,
-    0x939020, 0x49c810, 0x24e408, 0x127204, 0x093902, 0x049c81, 0xfdb444, 0x7eda22,
-    0x3f6d11, 0xe04c8c, 0x702646, 0x381323, 0xe3f395, 0x8e03ce, 0x4701e7, 0xdc7af7,
-    0x91c77f, 0xb719bb, 0xa476d9, 0xadc168, 0x56e0b4, 0x2b705a, 0x15b82d, 0xf52612,
-    0x7a9309, 0xc2b380, 0x6159c0, 0x30ace0, 0x185670, 0x0c2b38, 0x06159c, 0x030ace,
-    0x018567, 0xff38b7, 0x80665f, 0xbfc92b, 0xa01e91, 0xaff54c, 0x57faa6, 0x2bfd53,
-    0xea04ad, 0x8af852, 0x457c29, 0xdd4410, 0x6ea208, 0x375104, 0x1ba882, 0x0dd441,
-    0xf91024, 0x7c8812, 0x3e4409, 0xe0d800, 0x706c00, 0x383600, 0x1c1b00, 0x0e0d80,
-    0x0706c0, 0x038360, 0x01c1b0, 0x00e0d8, 0x00706c, 0x003836, 0x001c1b, 0xfff409,
-    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
-    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
-    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000
+static PARITY_TABLE: [u32; 256] = [
+    0x000000, 0xfff409, 0x001c1b, 0xffe812, 0x003836, 0xffcc3f, 0x00242d, 0xffd024,
+    0x00706c, 0xff8465, 0x006c77, 0xff987e, 0x00485a, 0xffbc53, 0x005441, 0xffa048,
+    0x00e0d8, 0xff14d1, 0x00fcc3, 0xff08ca, 0x00d8ee, 0xff2ce7, 0x00c4f5, 0xff30fc,
+    0x0090b4, 0xff64bd, 0x008caf, 0xff78a6, 0x00a882, 0xff5c8b, 0x00b499, 0xff4090,
+    0x01c1b0, 0xfe35b9, 0x01ddab, 0xfe29a2, 0x01f986, 0xfe0d8f, 0x01e59d, 0xfe1194,
+    0x01b1dc, 0xfe45d5, 0x01adc7, 0xfe59ce, 0x0189ea, 0xfe7de3, 0x0195f1, 0xfe61f8,
+    0x012168, 0xfed561, 0x013d73, 0xfec97a, 0x01195e, 0xfeed57, 0x010545, 0xfef14c,
+    0x015104, 0xfea50d, 0x014d1f, 0xfeb916, 0x016932, 0xfe9d3b, 0x017529, 0xfe8120,
+    0x038360, 0xfc7769, 0x039f7b, 0xfc6b72, 0x03bb56, 0xfc4f5f, 0x03a74d, 0xfc5344,
+    0x03f30c, 0xfc0705, 0x03ef17, 0xfc1b1e, 0x03cb3a, 0xfc3f33, 0x03d721, 0xfc2328,
+    0x0363b8, 0xfc97b1, 0x037fa3, 0xfc8baa, 0x035b8e, 0xfcaf87, 0x034795, 0xfcb39c,
+    0x0313d4, 0xfce7dd, 0x030fcf, 0xfcfbc6, 0x032be2, 0xfcdfeb, 0x0337f9, 0xfcc3f0,
+    0x0242d0, 0xfdb6d9, 0x025ecb, 0xfdaac2, 0x027ae6, 0xfd8eef, 0x0266fd, 0xfd92f4,
+    0x0232bc, 0xfdc6b5, 0x022ea7, 0xfddaae, 0x020a8a, 0xfdfe83, 0x021691, 0xfde298,
+    0x02a208, 0xfd5601, 0x02be13, 0xfd4a1a, 0x029a3e, 0xfd6e37, 0x028625, 0xfd722c,
+    0x02d264, 0xfd266d, 0x02ce7f, 0xfd3a76, 0x02ea52, 0xfd1e5b, 0x02f649, 0xfd0240,
+    0x0706c0, 0xf8f2c9, 0x071adb, 0xf8eed2, 0x073ef6, 0xf8caff, 0x0722ed, 0xf8d6e4,
+    0x0776ac, 0xf882a5, 0x076ab7, 0xf89ebe, 0x074e9a, 0xf8ba93, 0x075281, 0xf8a688,
+    0x07e618, 0xf81211, 0x07fa03, 0xf80e0a, 0x07de2e, 0xf82a27, 0x07c235, 0xf8363c,
+    0x079674, 0xf8627d, 0x078a6f, 0xf87e66, 0x07ae42, 0xf85a4b, 0x07b259, 0xf84650,
+    0x06c770, 0xf93379, 0x06db6b, 0xf92f62, 0x06ff46, 0xf90b4f, 0x06e35d, 0xf91754,
+    0x06b71c, 0xf94315, 0x06ab07, 0xf95f0e, 0x068f2a, 0xf97b23, 0x069331, 0xf96738,
+    0x0627a8, 0xf9d3a1, 0x063bb3, 0xf9cfba, 0x061f9e, 0xf9eb97, 0x060385, 0xf9f78c,
+    0x0657c4, 0xf9a3cd, 0x064bdf, 0xf9bfd6, 0x066ff2, 0xf99bfb, 0x0673e9, 0xf987e0,
+    0x0485a0, 0xfb71a9, 0x0499bb, 0xfb6db2, 0x04bd96, 0xfb499f, 0x04a18d, 0xfb5584,
+    0x04f5cc, 0xfb01c5, 0x04e9d7, 0xfb1dde, 0x04cdfa, 0xfb39f3, 0x04d1e1, 0xfb25e8,
+    0x046578, 0xfb9171, 0x047963, 0xfb8d6a, 0x045d4e, 0xfba947, 0x044155, 0xfbb55c,
+    0x041514, 0xfbe11d, 0x04090f, 0xfbfd06, 0x042d22, 0xfbd92b, 0x043139, 0xfbc530,
+    0x054410, 0xfab019, 0x05580b, 0xfaac02, 0x057c26, 0xfa882f, 0x05603d, 0xfa9434,
+    0x05347c, 0xfac075, 0x052867, 0xfadc6e, 0x050c4a, 0xfaf843, 0x051051, 0xfae458,
+    0x05a4c8, 0xfa50c1, 0x05b8d3, 0xfa4cda, 0x059cfe, 0xfa68f7, 0x0580e5, 0xfa74ec,
+    0x05d4a4, 0xfa20ad, 0x05c8bf, 0xfa3cb6, 0x05ec92, 0xfa189b, 0x05f089, 0xfa0480,
 ];
 
-// Calculates the checksum of the data frame passed to it, based on the parity table provided.
-// It takes a byte slice `data` and an optional number of bits.
-// If the number of bits is not provided, it is determined based on the length of `data`.
-pub fn checksum(data: &[u8], bits: Option<u8>) -> u32 {
-    let bits = match bits {
-        Some(b) => b as usize,
-        None => {
-            if data.len() * 8 == SHORT_MSG_BITS as usize {
-                SHORT_MSG_BITS as usize
-            } else if data.len() * 8 == LONG_MSG_BITS as usize {
-                LONG_MSG_BITS as usize
-            } else {
-                return 0 as u32;
-            }
-        }
-    };
-    debug!("checksum: bits = {}", bits);
-
-    let offset = if bits == LONG_MSG_BITS as usize {
-        0
-    } else {
-        LONG_MSG_BITS - SHORT_MSG_BITS
-    };
-
-    let mut crc = 0;
-    for j in 0..bits {
-        let b = j / 8;
-        let bit = j % 8;
-        let bitmask = 1 << (7 - bit);
-
-        if data.get(b).map_or(false, |&byte| byte & bitmask != 0) {
-            crc ^= PARITY_TABLE[j + offset as usize];
-        }
+pub fn modescrc_buffer_crc(data: &[u8], len: usize) -> u32 {
+    let mut rem: u32 = 0;
+    for i in 0..len {
+        rem = ((rem & 0x00FFFF) << 8) ^ PARITY_TABLE[((data[i] as u32) ^ ((rem & 0xFF0000) >> 16)) as usize];
     }
-
-    crc
-}
-
-// Calculates the checksum of the data frame passed to it, based on the parity table provided.
-// It takes a byte slice `data` and an optional number of bits.
-// If the number of bits is not provided, it is determined based on the length of `data`.
-// Returns true if checksum in the message (last 3 bytes) matches the computed checksum, otherwise returns false.
-pub fn checksum_compare(data: &[u8], bits: Option<u8>) -> bool {
-    let bits = match bits {
-        Some(b) => b as usize,
-        None => {
-            if data.len() * 8 == SHORT_MSG_BITS as usize {
-                SHORT_MSG_BITS as usize
-            } else if data.len() * 8 == LONG_MSG_BITS as usize {
-                LONG_MSG_BITS as usize
-            } else {
-                return false;
-            }
-        }
-    };
-    trace!("checksum_compare: bits = {}", bits);
-
-    let offset = if bits == LONG_MSG_BITS as usize {
-        0
-    } else {
-        LONG_MSG_BITS - SHORT_MSG_BITS
-    };
-
-    trace!("checksum_compare: offset = {}", offset);
-    let received_checksum = modescrc_buffer_crc(data, Some(bits));
-
-    let mut expected_checksum = 0;
-    for j in 0..bits {
-        let b = j / 8;
-        let bit = j % 8;
-        let bitmask = 1 << (7 - bit);
-
-        if data.get(b).map_or(false, |&byte| byte & bitmask != 0) {
-            expected_checksum ^= PARITY_TABLE[j + offset as usize];
-        }
-    }
-    trace!("checksum_compare: expected_checksum = {:#02X}", expected_checksum);
-    trace!("checksum_compare: received_checksum = {:#02X}", received_checksum);
-
-    // Compare the received checksum with the expected checksum
-    received_checksum == expected_checksum 
-}
-
-// Extracts the CRC value from a data frame last 3 bytes.
-// It takes a byte slice `data` and an optional number of bits.
-// If the number of bits is not provided, it defaults to the length of `data` multiplied by 8 (to convert to bits).
-pub fn modescrc_buffer_crc(data: &[u8], bits: Option<usize>) -> u32 {
-    let bytes = bits.map_or(data.len() * 8, |b| b as usize) / 8;
-
-    // Ensure that there are enough bytes in the data slice to prevent panic due to out-of-bounds access.
-    trace!("crc: bytes = {}", bytes);
-    if bytes < 3 {
-        error!("Data slice is too short to calculate CRC");
-        return 0;
-    }
-
-    trace!("crc: data = {:#02X}", data.as_hex());
-    ((data[bytes - 3] as u32) << 16) | ((data[bytes - 2] as u32) << 8) | (data[bytes - 1] as u32)
+    rem
 }
