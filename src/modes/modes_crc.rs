@@ -139,7 +139,7 @@ pub fn checksum_compare(data: &[u8], bits: Option<u8>) -> bool {
     };
 
     trace!("checksum_compare: offset = {}", offset);
-    let received_checksum = crc(data, Some(bits as u8));
+    let received_checksum = modescrc_buffer_crc(data, Some(bits));
 
     let mut expected_checksum = 0;
     for j in 0..bits {
@@ -161,7 +161,7 @@ pub fn checksum_compare(data: &[u8], bits: Option<u8>) -> bool {
 // Extracts the CRC value from a data frame last 3 bytes.
 // It takes a byte slice `data` and an optional number of bits.
 // If the number of bits is not provided, it defaults to the length of `data` multiplied by 8 (to convert to bits).
-pub fn crc(data: &[u8], bits: Option<u8>) -> u32 {
+pub fn modescrc_buffer_crc(data: &[u8], bits: Option<usize>) -> u32 {
     let bytes = bits.map_or(data.len() * 8, |b| b as usize) / 8;
 
     // Ensure that there are enough bytes in the data slice to prevent panic due to out-of-bounds access.

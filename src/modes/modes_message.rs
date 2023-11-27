@@ -28,7 +28,7 @@ use std::fmt;
 use std::collections::BTreeMap;
 //use hex_slice::AsHex;
 
-//use crate::modes::modes_crc;
+use crate::modes::modes_crc::*;
 use crate::modes::modes::*;
 use crate::modes::modes_reader::*;
 
@@ -153,7 +153,7 @@ pub fn df_event_name(df: u32) -> Option<String> {
 }
 
 // A structure representing a modes message.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ModesMessage {
     pub timestamp: u64,                        // 12MHz timestamp
     pub signal: u8,                            // signal level
@@ -259,7 +259,37 @@ impl ModesMessage {
         message
     }
 
-    fn decode(&mut self) -> i32 {
+    pub fn sq_length(&mut self) -> usize {
+        return self.datalen;
+    }
+
+    pub fn sq_item(&mut self, i: usize) -> Result<u8, &'static str> {
+        if i < 0 || i >= self.datalen {
+            return Err("byte index out of range");
+        }
+
+       Ok(self.data[i])
+    }
+
+    /// Calculates a hash for the message using a simple hashing algorithm.
+    pub fn hash(&self) -> u32 {
+        let mut hash: u32 = 0;
+
+        // Jenkins one-at-a-time hash
+        for i in 0..4.min(self.datalen as usize) {
+            hash += self.data[i] as u32;
+            hash = hash.wrapping_add(hash << 10);
+            hash ^= hash >> 6;
+        }
+
+        hash = hash.wrapping_add(hash << 3);
+        hash ^= hash >> 11;
+        hash = hash.wrapping_add(hash << 15);
+
+        hash
+    }
+
+    pub fn decode(&mut self) -> i32 {
         let mut crc: u32;
 
         // clear state
@@ -287,8 +317,8 @@ impl ModesMessage {
             // we do not know how to handle this message type, no further processing
             return 0;
         }
-        //crc = crc_residual(&self.data, self.datalen); //TODO: fixme
-        //self.crc = crc;
+        crc = crc_residual(&self.data, self.datalen); //TODO: fixme
+        self.crc = crc;
         match self.df {
             0 | 4 | 16 | 20 => {
                 self.address = self.crc as i32;
@@ -334,35 +364,24 @@ impl ModesMessage {
         return 0;
     }
 
-    /// Returns the length of the data in the message.
-    fn len(&self) -> usize {
-        self.datalen
-    }
-
-    /// Calculates a hash for the message using a simple hashing algorithm.
-    fn hash(&self) -> u32 {
-        let mut hash: u32 = 0;
-
-        // Jenkins one-at-a-time hash
-        for i in 0..4.min(self.datalen as usize) {
-            hash += self.data[i] as u32;
-            hash = hash.wrapping_add(hash << 10);
-            hash ^= hash >> 6;
-        }
-
-        hash = hash.wrapping_add(hash << 3);
-        hash ^= hash >> 11;
-        hash = hash.wrapping_add(hash << 15);
-
-        hash as u32
-    }
-
     /// Compares two `ModesMessage` instances.
     fn compare(&self, other: &Self) -> Ordering {
         if self.datalen != other.datalen {
             return self.datalen.cmp(&other.datalen);
         }
         self.data.as_slice().cmp(&other.data.as_slice())
+    }
+
+    fn rich_compare(&self, other: &Self, op: &str) -> Option<bool> {
+        match op {
+            "eq" => Some(self == other),
+            "ne" => Some(self != other),
+            "lt" => Some(self < other),
+            "le" => Some(self <= other),
+            "gt" => Some(self > other),
+            "ge" => Some(self >= other),
+            _ => None, // NotImplemented equivalent
+        }
     }
 }
 
@@ -382,4 +401,19 @@ impl fmt::Display for ModesMessage {
             }
         }
     }
+}
+
+pub fn crc_residual(message: &[u8], len: usize) -> u32 {
+    let mut crc: u32;
+
+    if len < 3 {
+        return 0;
+    }
+
+    crc = modescrc_buffer_crc(message, Some(len - 3));
+    crc = crc ^ ((message[len-3] as u32) << 16);
+    crc = crc ^ ((message[len-2] as u32) << 8);
+    crc = crc ^ (message[len-1] as u32);
+
+    return crc;
 }

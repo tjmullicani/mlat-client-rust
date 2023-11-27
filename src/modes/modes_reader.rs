@@ -39,7 +39,7 @@ use crate::modes::modes_message::*;
 use crate::modes::modes::*;
 
 /* decoder modes */
-#[derive(Copy, Eq, PartialEq, Hash, Clone, Debug)]
+#[derive(Copy, Eq, PartialEq, Hash, Clone, Debug, PartialOrd, Ord)]
 pub enum DecoderMode {
     Beast,             /* Beast binary, freerunning 48-bit timestamp @ 12MHz */
     Radarcape,         /* Beast binary, 1GHz Radarcape timestamp, UTC synchronized from GPS */
@@ -1198,7 +1198,7 @@ pub fn radarcape_status_to_dict(message: Vec<u8>) -> BTreeMap<String, EventData>
     status_dict
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialOrd)]
 pub enum EventData {
     Mode(DecoderMode),
     Frequency(u64),
@@ -1255,6 +1255,30 @@ impl Hash for EventData {
                     value.hash(state);
                 }
             }
+        }
+    }
+}
+
+impl Ord for EventData {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (EventData::Mode(mode1), EventData::Mode(mode2)) => mode1.cmp(mode2),
+            (EventData::Frequency(freq1), EventData::Frequency(freq2)) => freq1.cmp(freq2),
+            (EventData::Epoch(epoch1), EventData::Epoch(epoch2)) => epoch1.cmp(epoch2),
+            (EventData::SettingsList(list1), EventData::SettingsList(list2)) => {
+                // Assuming SettingsList is a Vec<EventData>
+                list1.cmp(list2)
+            }
+            (EventData::Integer(value1), EventData::Integer(value2)) => value1.cmp(value2),
+            (EventData::Float(value1), EventData::Float(value2)) => {
+                value1.to_bits().cmp(&value2.to_bits())
+            }
+            (EventData::GpsStatus(status1), EventData::GpsStatus(status2)) => {
+                // Assuming GpsStatus is a HashMap<EventData, EventData>
+                status1.cmp(status2)
+            }
+            // Add more cases as needed
+            _ => unimplemented!(), // Handle other cases as needed
         }
     }
 }
