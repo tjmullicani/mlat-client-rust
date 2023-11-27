@@ -317,7 +317,7 @@ impl ModesMessage {
             // we do not know how to handle this message type, no further processing
             return 0;
         }
-        crc = crc_residual(&self.data, self.datalen); //TODO: fixme
+        crc = crc_residual(&self.data, self.datalen);
         self.crc = crc;
         match self.df {
             0 | 4 | 16 | 20 => {
