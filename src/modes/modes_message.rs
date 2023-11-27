@@ -142,12 +142,12 @@ pub fn crc_residual(message: &[u8], len: usize) -> u32 {
 }*/
 
 // Returns the event name associated with a given DF event code.
-pub fn df_event_name(df: u32) -> Option<String> {
+pub fn df_event_name(df: u32) -> Option<&'static str> {
     match df {
-        DF_EVENT_TIMESTAMP_JUMP => Some("DF_EVENT_TIMESTAMP_JUMP".to_string()),
-        DF_EVENT_MODE_CHANGE => Some("DF_EVENT_MODE_CHANGE".to_string()),
-        DF_EVENT_EPOCH_ROLLOVER => Some("DF_EVENT_EPOCH_ROLLOVER".to_string()),
-        DF_EVENT_RADARCAPE_STATUS => Some("DF_EVENT_RADARCAPE_STATUS".to_string()),
+        DF_EVENT_TIMESTAMP_JUMP => Some("DF_EVENT_TIMESTAMP_JUMP"),
+        DF_EVENT_MODE_CHANGE => Some("DF_EVENT_MODE_CHANGE"),
+        DF_EVENT_EPOCH_ROLLOVER => Some("DF_EVENT_EPOCH_ROLLOVER"),
+        DF_EVENT_RADARCAPE_STATUS => Some("DF_EVENT_RADARCAPE_STATUS"),
         _ => None,
     }
 }
@@ -171,7 +171,7 @@ pub struct ModesMessage {
     pub data: Vec<u8>,                         // The payload data
     pub datalen: usize,                        // Length of the payload data
 
-    pub eventdata: BTreeMap<String, EventData>,  // event data dictionary for special event messages
+    pub eventdata: BTreeMap<&'static str, EventData>,  // event data dictionary for special event messages
 }
 
 impl ModesMessage {
@@ -188,7 +188,7 @@ impl ModesMessage {
         altitude: i32,
         data: Vec<u8>,
         datalen: usize,
-        eventdata: BTreeMap<String, EventData>,
+        eventdata: BTreeMap<&'static str, EventData>,
     ) -> Self {
         ModesMessage { 
             timestamp,
@@ -247,7 +247,7 @@ impl ModesMessage {
 
     // internal entry point to build a new event message
     // steals a reference from eventdata
-    pub fn new_eventmessage(msgtype: u32, timestamp: u64, eventdata: BTreeMap<String, EventData>) -> ModesMessage {
+    pub fn new_eventmessage(msgtype: u32, timestamp: u64, eventdata: BTreeMap<&'static str, EventData>) -> ModesMessage {
         let mut message = ModesMessage {
             timestamp: timestamp,
             df: msgtype,

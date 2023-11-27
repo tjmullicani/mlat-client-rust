@@ -67,9 +67,9 @@ pub const SYNTHETIC_TIMESTAMP_END: u64 = SYNTHETIC_TIMESTAMP_START + 10;
 pub struct ModesReader {
     // decoder characteristics
     decoder_mode: DecoderMode,                      // 
-    decoder_mode_string: String,                    // 
+    decoder_mode_string: &'static str,              // 
     frequency: u64,                                 // timestamp frequency
-    epoch: String,                                  // timestamp epoch
+    epoch: &'static str,                            // timestamp epoch
 
     last_timestamp: u64,                            // last seen timestamp
     radarcape_utc_bugfix: bool,                     // 
@@ -98,9 +98,9 @@ impl Default for ModesReader {
         ModesReader {
             /* minimal init */
             decoder_mode: DecoderMode::None,
-            decoder_mode_string: "".to_string(),
+            decoder_mode_string: "",
             frequency: 0,
-            epoch: "".to_string(),
+            epoch: "",
             last_timestamp: 0,
             radarcape_utc_bugfix: false,
             allow_mode_change: true,
@@ -120,9 +120,9 @@ impl Default for ModesReader {
 impl ModesReader {
     fn new(
         decoder_mode: DecoderMode,
-        decoder_mode_string: String,
+        decoder_mode_string: &'static str,
         frequency: u64,
-        epoch: String,
+        epoch: &'static str,
         last_timestamp: u64, /* last seen timestamp */
         radarcape_utc_bugfix: bool,
         allow_mode_change: bool,
@@ -163,27 +163,27 @@ impl ModesReader {
         match newmode {
             DecoderMode::Beast => {
                 self.frequency = 12_000_000u64; // assumed
-                self.epoch = String::from("");
+                self.epoch = "";
             },
             DecoderMode::Radarcape => {
                 self.frequency = 1_000_000_000u64;
-                self.epoch = String::from("utc_midnight");
+                self.epoch = "utc_midnight";
             },
             DecoderMode::RadarcapeEmulated => {
                 self.frequency = 1_000_000_000u64;
-                self.epoch = String::from("");
+                self.epoch = "";
             },
             DecoderMode::Avrmlat => {
                 self.frequency = 12_000_000u64; // assumed
-                self.epoch = String::from("");
+                self.epoch = "";
             },
             DecoderMode::Sbs => {
                 self.frequency = 20_000_000u64;
-                self.epoch = String::from("");
+                self.epoch = "";
             },
             DecoderMode::Avr | _ => {
                 self.frequency = 0;
-                self.epoch = String::from("");
+                self.epoch = "";
             },
         }
     }
@@ -1037,7 +1037,7 @@ impl ModesReader {
         return timestamp >= SYNTHETIC_TIMESTAMP_START && timestamp <= SYNTHETIC_TIMESTAMP_END;
     }
 
-    pub fn radarcape_position_to_dict(&mut self, data: Vec<u8>) -> Option<BTreeMap<String, EventData>> {
+    pub fn radarcape_position_to_dict(&mut self, data: Vec<u8>) -> Option<BTreeMap<&'static str, EventData>> {
         let lat = f32::from_le_bytes(data[4..8].try_into().unwrap());
         let lon = f32::from_le_bytes(data[8..12].try_into().unwrap());
         let alt = f32::from_le_bytes(data[12..16].try_into().unwrap());
@@ -1049,9 +1049,9 @@ impl ModesReader {
         }
 
         let mut map = BTreeMap::new();
-        map.insert("lat".to_string(), EventData::Float(lat));
-        map.insert("lon".to_string(), EventData::Float(lon));
-        map.insert("alt".to_string(), EventData::Float(alt));
+        map.insert("lat", EventData::Float(lat));
+        map.insert("lon", EventData::Float(lon));
+        map.insert("alt", EventData::Float(alt));
 
         Some(map)
     }
@@ -1107,7 +1107,7 @@ impl ModesReader {
     // create an event message for a timestamp jump
     pub fn make_timestamp_jump_event(&mut self, timestamp: u64) -> ModesMessage {
         let mut eventdata = BTreeMap::new();
-        eventdata.insert("last-timestamp".to_string(), EventData::Frequency(self.last_timestamp));
+        eventdata.insert("last-timestamp", EventData::Frequency(self.last_timestamp));
 
         return ModesMessage::new_eventmessage(DF_EVENT_TIMESTAMP_JUMP, timestamp, eventdata);
     }
@@ -1133,9 +1133,9 @@ impl ModesReader {
     // create an event message for a decoder mode change. the new mode should already be set.
     pub fn make_mode_change_event(&mut self) -> ModesMessage {
         let mut eventdata = BTreeMap::new();
-        eventdata.insert("mode".to_string(), EventData::Mode(self.decoder_mode.clone()));
-        eventdata.insert("frequency".to_string(), EventData::Frequency(self.frequency));
-        eventdata.insert("epoch".to_string(), EventData::Epoch(self.epoch.clone()));
+        eventdata.insert("mode", EventData::Mode(self.decoder_mode.clone()));
+        eventdata.insert("frequency", EventData::Frequency(self.frequency));
+        eventdata.insert("epoch", EventData::Epoch(self.epoch.clone()));
 
        return ModesMessage::new_eventmessage(DF_EVENT_MODE_CHANGE, 0, eventdata);
     }
@@ -1149,51 +1149,51 @@ impl ModesReader {
 }
 
 // turn a radarcape DIP switch setting byte into a Python list of settings strings
-pub fn radarcape_settings_to_list(settings: u8) -> Vec<String> {
+pub fn radarcape_settings_to_list(settings: u8) -> Vec<&'static str> {
     vec![
-        if settings & 0x01 != 0 { "beast".to_string() } else if settings & 0x04 != 0 { "avrmlat".to_string() } else { "avr".to_string() },
-        if settings & 0x02 != 0 { "filtered_frames".to_string() } else { "all_frames".to_string() },
-        if settings & 0x08 != 0 { "no_crc".to_string() } else { "check_crc".to_string() },
-        if settings & 0x10 != 0 { "gps_timestamps".to_string() } else { "legacy_timestamps".to_string() },
-        if settings & 0x20 != 0 { "rtscts".to_string() } else { "no_rtscts".to_string() },
-        if settings & 0x40 != 0 { "no_fec".to_string() } else { "fec".to_string() },
-        if settings & 0x80 != 0 { "modeac".to_string() } else { "no_modeac".to_string() },
+        if settings & 0x01 != 0 { "beast" } else if settings & 0x04 != 0 { "avrmlat" } else { "avr" },
+        if settings & 0x02 != 0 { "filtered_frames" } else { "all_frames" },
+        if settings & 0x08 != 0 { "no_crc" } else { "check_crc" },
+        if settings & 0x10 != 0 { "gps_timestamps" } else { "legacy_timestamps" },
+        if settings & 0x20 != 0 { "rtscts" } else { "no_rtscts" },
+        if settings & 0x40 != 0 { "no_fec" } else { "fec" },
+        if settings & 0x80 != 0 { "modeac" } else { "no_modeac" },
     ]
 }
 
 // turn a radarcape GPS status byte into a Python dict
-pub fn radarcape_gpsstatus_to_dict(status: u8) -> BTreeMap<String, bool> {
+pub fn radarcape_gpsstatus_to_dict(status: u8) -> BTreeMap<&'static str, bool> {
     let mut gps_status = BTreeMap::new();
 
     if status & 0x80 == 0 {
-        gps_status.insert("utc_bugfix".to_string(), false);
-        gps_status.insert("timestamp_ok".to_string(), true);
+        gps_status.insert("utc_bugfix", false);
+        gps_status.insert("timestamp_ok", true);
     } else {
-        gps_status.insert("utc_bugfix".to_string(), true);
-        gps_status.insert("timestamp_ok".to_string(), status & 0x20 == 0);
-        gps_status.insert("sync_ok".to_string(), status & 0x10 != 0);
-        gps_status.insert("utc_offset_ok".to_string(), status & 0x08 != 0);
-        gps_status.insert("sats_ok".to_string(), status & 0x04 != 0);
-        gps_status.insert("tracking_ok".to_string(), status & 0x02 != 0);
-        gps_status.insert("antenna_ok".to_string(), status & 0x01 != 0);
+        gps_status.insert("utc_bugfix", true);
+        gps_status.insert("timestamp_ok", status & 0x20 == 0);
+        gps_status.insert("sync_ok", status & 0x10 != 0);
+        gps_status.insert("utc_offset_ok", status & 0x08 != 0);
+        gps_status.insert("sats_ok", status & 0x04 != 0);
+        gps_status.insert("tracking_ok", status & 0x02 != 0);
+        gps_status.insert("antenna_ok", status & 0x01 != 0);
     }
 
     gps_status
 }
 
 // turn a radarcape 0x34 status message into a Python dict
-pub fn radarcape_status_to_dict(message: Vec<u8>) -> BTreeMap<String, EventData> {
+pub fn radarcape_status_to_dict(message: Vec<u8>) -> BTreeMap<&'static str, EventData> {
     let mut status_dict = BTreeMap::new();
 
     // Convert the first byte to a list and add it to the dictionary
-    status_dict.insert("settings".to_string(), EventData::SettingsList(radarcape_settings_to_list(message[0])));
+    status_dict.insert("settings", EventData::SettingsList(radarcape_settings_to_list(message[0])));
 
     // Convert the second byte to an i8 and add it to the dictionary
     let timestamp_pps_delta: i8 = message[1] as i8;
-    status_dict.insert("timestamp_pps_delta".to_string(), EventData::Integer(timestamp_pps_delta as i32));
+    status_dict.insert("timestamp_pps_delta", EventData::Integer(timestamp_pps_delta as i32));
 
     // Convert the third byte to a dictionary and add it to the dictionary
-    status_dict.insert("gps_status".to_string(), EventData::GpsStatus(radarcape_gpsstatus_to_dict(message[2])));
+    status_dict.insert("gps_status", EventData::GpsStatus(radarcape_gpsstatus_to_dict(message[2])));
 
     status_dict
 }
@@ -1202,11 +1202,11 @@ pub fn radarcape_status_to_dict(message: Vec<u8>) -> BTreeMap<String, EventData>
 pub enum EventData {
     Mode(DecoderMode),
     Frequency(u64),
-    Epoch(String),
-    SettingsList(Vec<String>),
+    Epoch(&'static str),
+    SettingsList(Vec<&'static str>),
     Integer(i32),
     Float(f32),
-    GpsStatus(BTreeMap<String, bool>),
+    GpsStatus(BTreeMap<&'static str, bool>),
 }
 
 impl PartialEq for EventData {
