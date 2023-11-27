@@ -27,16 +27,16 @@ use std::collections::HashSet;
 use std::collections::BTreeMap;
 use hex_slice::AsHex;
 use log::{error, warn, info, debug, trace};
-use std::io::{Read};
+// use std::io::{Read};
 use std::hash::{Hash, Hasher};
 
-use adsb_deku::deku::DekuContainerRead;
-use adsb_deku::Frame;
+// use adsb_deku::deku::DekuContainerRead;
+// use adsb_deku::Frame;
 
 // use crate::modes::modes::*;
 // use crate::modes::modes_crc::*;
-use crate::modes::modes_message::{self, *};
-use crate::modes::modes::{self, *};
+use crate::modes::modes_message::*;
+use crate::modes::modes::*;
 
 /* decoder modes */
 #[derive(Copy, Eq, PartialEq, Hash, Clone, Debug)]
@@ -343,7 +343,7 @@ impl ModesReader {
             let mut has_timestamp_signal: bool = true;
             let msgtype = mm[0];
 
-            debug!("feed_beast: mm frame is {:#02X}", mm.as_hex());
+            debug!("feed_beast: mm = {:#02X}", mm.as_hex());
             let ms: Vec<u8> = match msgtype {
                 MESSAGE_TYPE_AC => {
                     if mm.len() != 10 {
@@ -394,12 +394,11 @@ impl ModesReader {
                 },
             };
 
-            if ms == [0x00, 0x00] {
-                debug!("Efeed_beast: mpty byte Mode-AC message, skipping");
+            if ms.iter().all(|&byte| byte == 0x00) {
+                debug!("feed_beast: Empty byte message {:#02X}, skipping", ms.as_hex());
                 continue;
             }
 
-            debug!("feed_beast: mm = {:#02X}", mm.as_hex());
             debug!("feed_beast: ms = {:#02X}", ms.as_hex());
             let mut timestamp: u64;
             let mut signal: u8;
@@ -545,7 +544,7 @@ impl ModesReader {
 
             if msgtype == MESSAGE_TYPE_RADARCAPE {
                 /* radarcape-style status message, emit the status event if wanted */
-                if (self.want_events) {
+                if self.want_events {
                     messages.insert(self.make_radarcape_status_event(timestamp, ms));
                     message_count += 1;
                 }
@@ -567,11 +566,11 @@ impl ModesReader {
             }
 
             // it's a Mode A/C or Mode S message, parse it
-            let message = modesmessage_from_buffer(timestamp, signal, ms.clone(), ms.len());
+            let message = ModesMessage::from_buffer(timestamp, signal, ms);
 
             // apply filters, update seen-set
             self.received_messages += 1;
-            let wanted = self.filter_message(message.clone());
+            let wanted = self.filter_message(message.clone().unwrap());
             // if wanted < 0 {
             //     break;
             // } else if wanted > 0 {
@@ -581,7 +580,7 @@ impl ModesReader {
             //     self.suppressed_messages += 1;
             // }
             // FIXME: use above code
-            messages.insert(message.clone());
+            messages.insert(message.clone().unwrap());
         }
 
         let rv = (messages, error_pending);
@@ -852,7 +851,7 @@ impl ModesReader {
             }
 
             /* it's a Mode A/C or Mode S message, parse it */
-            if !(message = modesmessage_from_buffer(timestamp, signal, data, message_len)) {
+            if !(message = ModesMessage::from_buffer(timestamp, signal, data, message_len)) {
                 // goto out;
             }
 
@@ -911,7 +910,7 @@ impl ModesReader {
             return 0;
         }
     
-        if !message.valid {
+        if message.valid == false {
             return self.want_invalid_messages as i32; // don't process further, contents are dubious
         }
     
@@ -1021,13 +1020,13 @@ impl ModesReader {
     pub fn make_radarcape_position_event(&mut self, data: u8) {
         let eventdata = self.radarcape_position_to_dict(data);
 
-        return modesmessage_new_eventmessage(DF_EVENT_RADARCAPE_POSITION, 0, eventdata);
+        return ModesMessage::new_eventmessage(DF_EVENT_RADARCAPE_POSITION, 0, eventdata);
     }*/
 
     pub fn make_radarcape_position_event(&mut self, data: Vec<u8>) -> ModesMessage {
         let eventdata = self.radarcape_position_to_dict(data).unwrap();
 
-        return modesmessage_new_eventmessage(DF_EVENT_RADARCAPE_POSITION, 0, eventdata);
+        return ModesMessage::new_eventmessage(DF_EVENT_RADARCAPE_POSITION, 0, eventdata);
     }
 
     pub fn is_synthetic_or_zero_timestamp(&mut self, timestamp: u64) -> bool {
@@ -1110,7 +1109,7 @@ impl ModesReader {
         let mut eventdata = BTreeMap::new();
         eventdata.insert("last-timestamp".to_string(), EventData::Frequency(self.last_timestamp));
 
-        return modesmessage_new_eventmessage(DF_EVENT_TIMESTAMP_JUMP, timestamp, eventdata);
+        return ModesMessage::new_eventmessage(DF_EVENT_TIMESTAMP_JUMP, timestamp, eventdata);
     }
 
     // static PyObject *make_mode_change_event(modesreader *self)
@@ -1121,14 +1120,14 @@ impl ModesReader {
     //                                         "epoch", self->epoch);
     //     if (eventdata == NULL)
     //         return NULL;
-    //     return modesmessage_new_eventmessage(DF_EVENT_MODE_CHANGE, 0, eventdata);
+    //     return ModesMessage::new_eventmessage(DF_EVENT_MODE_CHANGE, 0, eventdata);
     // }
 
     // create an event message for an epoch rollover (e.g. GPS end of day)
     pub fn make_epoch_rollover_event(&mut self, timestamp: u64) -> ModesMessage {
         let eventdata = BTreeMap::new();
 
-        return modesmessage_new_eventmessage(DF_EVENT_EPOCH_ROLLOVER, timestamp, eventdata);
+        return ModesMessage::new_eventmessage(DF_EVENT_EPOCH_ROLLOVER, timestamp, eventdata);
     }
 
     // create an event message for a decoder mode change. the new mode should already be set.
@@ -1138,14 +1137,14 @@ impl ModesReader {
         eventdata.insert("frequency".to_string(), EventData::Frequency(self.frequency));
         eventdata.insert("epoch".to_string(), EventData::Epoch(self.epoch.clone()));
 
-       return modesmessage_new_eventmessage(DF_EVENT_MODE_CHANGE, 0, eventdata);
+       return ModesMessage::new_eventmessage(DF_EVENT_MODE_CHANGE, 0, eventdata);
     }
 
     // create an event message for a radarcape status report
     pub fn make_radarcape_status_event(&mut self, timestamp: u64, data: Vec<u8>) -> ModesMessage {
         let mut eventdata = radarcape_status_to_dict(data);
 
-        return modesmessage_new_eventmessage(DF_EVENT_RADARCAPE_STATUS, timestamp, eventdata);
+        return ModesMessage::new_eventmessage(DF_EVENT_RADARCAPE_STATUS, timestamp, eventdata);
     }
 }
 
@@ -1268,7 +1267,7 @@ pub struct BeastMessage {
     pub timestamp: u64,
     pub signal_level: u8,
     pub message: Vec<u8>,
-    pub message_parsed: Option<adsb_deku::Frame>,
+    //pub message_parsed: Option<adsb_deku::Frame>,
 }
 
 impl BeastMessage {

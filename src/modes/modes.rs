@@ -18,12 +18,6 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-use std::collections::HashMap;
-use std::cmp::Ordering;
-use std::fmt;
-
-use crate::modes::modes_message::*;
-
 // Special DF types for non-Mode-S messages
 pub const DF_MODEAC: u32 = 32;
 pub const DF_EVENT_TIMESTAMP_JUMP: u32 = 33;
@@ -31,5 +25,3 @@ pub const DF_EVENT_MODE_CHANGE: u32 = 34;
 pub const DF_EVENT_EPOCH_ROLLOVER: u32 = 35;
 pub const DF_EVENT_RADARCAPE_STATUS: u32 = 36;
 pub const DF_EVENT_RADARCAPE_POSITION: u32 = 37;
-
-//mod modes_message;

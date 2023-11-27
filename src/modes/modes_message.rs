@@ -26,11 +26,11 @@
 use std::cmp::Ordering;
 use std::fmt;
 use std::collections::BTreeMap;
-use hex_slice::AsHex;
+//use hex_slice::AsHex;
 
-use crate::modes::modes_crc;
-use crate::modes::modes::{self, *};
-use crate::modes::modes_reader::{self, *};
+//use crate::modes::modes_crc;
+use crate::modes::modes::*;
+use crate::modes::modes_reader::*;
 
 /// Decodes altitude information from a compact binary format (AC13 format).
 ///
@@ -152,31 +152,6 @@ pub fn df_event_name(df: u32) -> Option<String> {
     }
 }
 
-// internal entry point to build a new message from a buffer
-pub fn modesmessage_from_buffer(timestamp: u64, signal: u8, data: Vec<u8>, datalen: usize) -> ModesMessage {
-    let copydata = data;
-
-    let mut message = ModesMessage::default();
-    message.timestamp = timestamp;
-    message.signal = signal;
-    message.data = copydata;
-    message.datalen = datalen;
-
-    message
-}
-
-// internal entry point to build a new event message
-// steals a reference from eventdata
-pub fn modesmessage_new_eventmessage(msgtype: u32, timestamp: u64, eventdata: BTreeMap<String, EventData>) -> ModesMessage {
-    let mut message: ModesMessage = ModesMessage::default();
-
-    message.df = msgtype;
-    message.timestamp = timestamp;
-    message.eventdata = eventdata;
-    
-    message
-}
-
 // A structure representing a modes message.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ModesMessage {
@@ -252,26 +227,36 @@ impl ModesMessage {
     }
 
     // Function to build a new message from a buffer.
-    pub fn from_buffer(timestamp: u64, signal: u32, data: Vec<u8>) -> Result<Self, &'static str> {
-        let datalen = data.len();
-        let copydata = data;
+    pub fn from_buffer(timestamp: u64, signal: u8, data: Vec<u8>) -> Result<Self, &'static str> {
+        let mut message = ModesMessage {
+            timestamp: timestamp,
+            signal: signal,
+            data: data.clone(), // Clone the data if necessary
+            datalen: data.len(),
+            // Initialize other fields with default values
+            ..ModesMessage::default()
+        };
 
-        // Assuming `decode` is a function that modifies the message in some way.
-        // This function needs to be implemented.
-        // if decode(&mut message) < 0 {
-        //     return Err("Failed to decode message");
-        // }
+        // Decode the message
+        if message.decode() < 0 {
+            return Err("from_buffer: Failed to decode message");
+        }
 
-        Ok(ModesMessage::default())
+        Ok(message)
     }
 
-    // Function to build a new event message.
-    pub fn new_event_message(
-        event_type: u32,
-        timestamp: u64,
-        eventdata: BTreeMap<String, String>,
-    ) -> Self {
-        ModesMessage::default()
+    // internal entry point to build a new event message
+    // steals a reference from eventdata
+    pub fn new_eventmessage(msgtype: u32, timestamp: u64, eventdata: BTreeMap<String, EventData>) -> ModesMessage {
+        let mut message = ModesMessage {
+            timestamp: timestamp,
+            df: msgtype,
+            eventdata: eventdata.clone(),
+            // Initialize other fields with default values
+            ..ModesMessage::default()
+        };
+
+        message
     }
 
     fn decode(&mut self) -> i32 {
